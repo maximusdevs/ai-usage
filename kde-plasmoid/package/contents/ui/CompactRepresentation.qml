@@ -238,24 +238,16 @@ MouseArea {
 
             Rectangle {
                 id: notifBadge
-                implicitWidth: notifRow.implicitWidth + Kirigami.Units.smallSpacing * 2
-                implicitHeight: notifRow.implicitHeight + Kirigami.Units.smallSpacing
+                Layout.preferredWidth: Math.max(notifRow.implicitWidth + Kirigami.Units.smallSpacing * 3, Kirigami.Units.gridUnit * 1.6)
+                Layout.preferredHeight: Math.max(notifRow.implicitHeight + Kirigami.Units.smallSpacing, Kirigami.Units.gridUnit * 1.2)
+                implicitWidth: Layout.preferredWidth
+                implicitHeight: Layout.preferredHeight
                 radius: height / 2
                 color: notifMouse.containsMouse
-                    ? Qt.darker(Kirigami.Theme.highlightColor, 1.2)
-                    : Qt.alpha(Kirigami.Theme.highlightColor, 0.25)
+                    ? Kirigami.Theme.highlightColor
+                    : Qt.alpha(Kirigami.Theme.highlightColor, 0.3)
                 border.width: 1
                 border.color: Kirigami.Theme.highlightColor
-
-                MouseArea {
-                    id: notifMouse
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: {
-                        root.applet.triggerRenewalNoticeToggle();
-                    }
-                }
 
                 RowLayout {
                     id: notifRow
@@ -266,7 +258,9 @@ MouseArea {
                         source: "notifications"
                         implicitWidth: Kirigami.Units.iconSizes.small
                         implicitHeight: Kirigami.Units.iconSizes.small
-                        color: Kirigami.Theme.highlightColor
+                        color: notifMouse.containsMouse
+                            ? Kirigami.Theme.highlightedTextColor
+                            : Kirigami.Theme.highlightColor
                         Layout.alignment: Qt.AlignVCenter
                     }
 
@@ -274,9 +268,22 @@ MouseArea {
                         text: root.applet.activeRenewals.length.toString()
                         font.bold: true
                         font.pointSize: root.effectivePointSize
-                        color: Kirigami.Theme.highlightColor
+                        color: notifMouse.containsMouse
+                            ? Kirigami.Theme.highlightedTextColor
+                            : Kirigami.Theme.highlightColor
                         Layout.alignment: Qt.AlignVCenter
                         textFormat: Text.PlainText
+                    }
+                }
+
+                MouseArea {
+                    id: notifMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    z: 2
+                    onClicked: {
+                        root.applet.triggerRenewalNoticeToggle();
                     }
                 }
 

@@ -260,7 +260,7 @@ PlasmoidItem {
     }
 
     function refresh(forced) {
-        if (forced || !root.multiAccount) {
+        if (!root.multiAccount) {
             root.activeAccountOverride = "";
         }
         const cmd = root.currentCommand(forced ? { refresh: true } : {});
@@ -275,7 +275,17 @@ PlasmoidItem {
         if (!root.multiAccount || !label) return;
         root.activeAccountOverride = label;
         launcher.exec(Logic.buildAccountSwitchCommand(Plasmoid.configuration.binaryPath, label));
-        root.refresh(true);
+        const cmd = Logic.buildCommand(Plasmoid.configuration.binaryPath, root.fetchTimeoutSecs, { account: label, refresh: true });
+        if (Logic.shouldStartFetch(root.pendingCommand, cmd)) {
+            root.pendingCommand = cmd;
+            watchdog.restart();
+            reader.exec(cmd);
+        }
+    }
+
+    function simulateRenewal() {
+        launcher.exec(Logic.buildSimulateRenewalCommand(Plasmoid.configuration.binaryPath));
+        root.refresh(false);
     }
 
     // Backstop only. timeout(1) in the spawned command is what bounds and kills
@@ -364,5 +374,19 @@ PlasmoidItem {
         repeat: true
         triggeredOnStart: true
         onTriggered: root.nowMs = Date.now()
+    }
+
+    // Fast periodic check for local changes (account switch, simulated renewals, quota renewals).
+    // This executes `usage --json` without `--refresh`, taking < 6ms and making zero network requests.
+    Timer {
+        id: localStatePoller
+        interval: 2000
+        running: true
+        repeat: true
+        onTriggered: {
+            if (root.pendingCommand === "") {
+                root.refresh(false);
+            }
+        }
     }
 }

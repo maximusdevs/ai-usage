@@ -118,7 +118,20 @@ Item {
                 PlasmaComponents.ToolTip.text: text
                 PlasmaComponents.ToolTip.visible: hovered
                 PlasmaComponents.ToolTip.delay: Kirigami.Units.toolTipDelay
-                onClicked: full.applet.refresh(true)
+                onClicked: {
+                    full.applet.activeAccountOverride = "";
+                    full.applet.refresh(true);
+                }
+            }
+
+            PlasmaComponents.ToolButton {
+                icon.name: "dialog-information"
+                display: PlasmaComponents.AbstractButton.IconOnly
+                text: i18n("Simulate Renewal Alert")
+                PlasmaComponents.ToolTip.text: text
+                PlasmaComponents.ToolTip.visible: hovered
+                PlasmaComponents.ToolTip.delay: Kirigami.Units.toolTipDelay
+                onClicked: full.applet.simulateRenewal()
             }
 
             PlasmaComponents.ToolButton {

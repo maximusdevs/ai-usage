@@ -646,24 +646,34 @@ fn switch(args: &SwitchArgs) -> i32 {
         }
     }
 
-    // If this matches a configured multi-provider account, persist it as the active account.
-    if let Some(acct) = config.find_account(args.label) {
+    // If this matches a configured multi-provider account or saved snapshot, persist it as the active account.
+    let found_label = config
+        .find_account(args.label)
+        .map(|a| a.label.clone())
+        .or_else(|| {
+            crate::account_store::all_snapshots()
+                .into_iter()
+                .find(|s| crate::account_store::accounts_match_or_prefix(&s.account_label, args.label))
+                .map(|s| s.account_label)
+        });
+
+    if let Some(target_label) = found_label {
         if !args.dry_run {
-            if let Err(error) = crate::active::write_account(&acct.label) {
+            if let Err(error) = crate::active::write_account(&target_label) {
                 eprintln!("ai-usagebar account switch: failed to persist active account: {error}");
                 failed = true;
             } else {
                 if acted {
                     println!();
                 }
-                println!("Active account set to '{}'.", acct.label);
+                println!("Active account set to '{}'.", target_label);
                 acted = true;
             }
         } else {
             if acted {
                 println!();
             }
-            println!("Would set active account to '{}'.", acct.label);
+            println!("Would set active account to '{}'.", target_label);
             acted = true;
         }
     }
