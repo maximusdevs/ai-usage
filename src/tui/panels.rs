@@ -559,6 +559,14 @@ fn warning_label(
 ) -> Option<(String, String)> {
     let (code, message) = last_error.as_ref()?;
     if *code != 0 {
+        let trimmed = message.trim();
+        if trimmed.starts_with('{')
+            || trimmed.contains("not logged into")
+            || trimmed.contains("unauthenticated")
+            || trimmed.contains("error getting token")
+        {
+            return None;
+        }
         return Some((format!("HTTP {code}"), message.clone()));
     }
     if message.is_empty() {

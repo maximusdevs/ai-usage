@@ -137,6 +137,32 @@ pub fn accounts_match_or_prefix(a: &str, b: &str) -> bool {
     false
 }
 
+/// Sanitize snapshot entry to strip out transient HTTP error sections or raw JSON failures.
+pub fn sanitize_snapshot_entry(entry: &mut ReportEntry) {
+    entry.sections.retain(|s| match s {
+        ReportSection::Text { label, value } => {
+            let lbl = label.trim();
+            let val = value.trim();
+            if lbl.starts_with("HTTP ")
+                || val.starts_with('{')
+                || val.contains("not logged into")
+                || val.contains("error getting token")
+            {
+                false
+            } else {
+                true
+            }
+        }
+        _ => true,
+    });
+    while matches!(entry.sections.last(), Some(ReportSection::Spacer)) {
+        entry.sections.pop();
+    }
+    if entry.sections.iter().any(|s| matches!(s, ReportSection::Metric { .. })) {
+        entry.stale = false;
+    }
+}
+
 /// Normalize snapshot store so that account labels are canonical full emails where known,
 /// and duplicate snapshots where one label was just the username prefix are merged.
 pub fn normalize_store(store: &mut SnapshotStore) {
@@ -185,6 +211,13 @@ pub fn normalize_store(store: &mut SnapshotStore) {
             canonical_map.insert(snap.account_label.clone(), snap);
         }
     }
+
+    for snap in canonical_map.values_mut() {
+        for entry in &mut snap.entries {
+            sanitize_snapshot_entry(entry);
+        }
+    }
+
     // Re-key canonical_map by account_label
     store.snapshots = canonical_map
         .into_iter()
@@ -305,10 +338,12 @@ pub fn record_provider_entry_at(
         snap.providers.push(entry.id.clone());
     }
 
+    let mut clean_entry = entry.clone();
+    sanitize_snapshot_entry(&mut clean_entry);
     if let Some(pos) = snap.entries.iter().position(|e| e.id == entry.id) {
-        snap.entries[pos] = entry.clone();
+        snap.entries[pos] = clean_entry;
     } else {
-        snap.entries.push(entry.clone());
+        snap.entries.push(clean_entry);
     }
 
     save_store_to(path, &store)
@@ -362,6 +397,7 @@ pub fn all_snapshots_at(path: &Path) -> Vec<AccountSnapshot> {
 /// relative to the current timestamp (`now`).
 pub fn update_snapshot_entries(entries: &mut [ReportEntry], now: DateTime<Utc>) {
     for entry in entries.iter_mut() {
+        sanitize_snapshot_entry(entry);
         for section in &mut entry.sections {
             if let ReportSection::Metric {
                 reset_at: Some(reset_at),
@@ -399,14 +435,21 @@ pub fn detect_provider_email(provider_slug: &str, config: &Config) -> Option<Str
             }
         }
         "antigravity" => {
-            if let Ok(cache) = crate::cache::Cache::for_vendor("antigravity")
-                && let Ok(raw) = fs::read_to_string(cache.payload_path())
-                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw)
-                && let Some(email) = v["user_email"].as_str()
-            {
-                let trimmed = email.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
+            if let Ok(cache) = crate::cache::Cache::for_vendor("antigravity") {
+                let is_logged_out = if let Ok(err) = fs::read_to_string(cache.last_error_path()) {
+                    err.contains("not logged into") || err.contains("unauthenticated")
+                } else {
+                    false
+                };
+                if !is_logged_out
+                    && let Ok(raw) = fs::read_to_string(cache.payload_path())
+                    && let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw)
+                    && let Some(email) = v["user_email"].as_str()
+                {
+                    let trimmed = email.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
                 }
             }
             if let Ok(Some(raw)) = crate::antigravity::credential::read() {

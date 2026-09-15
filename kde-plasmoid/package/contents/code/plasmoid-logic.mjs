@@ -390,7 +390,22 @@ export function isAlarming(entry) {
 export function detailRows(entry) {
     if (!entry)
         return [];
-    return entry.sections.filter(s => s.type !== 'spacer');
+    return entry.sections.filter(s => {
+        if (s.type === 'spacer') return false;
+        if (s.type === 'text') {
+            const lbl = String(s.label || '').trim();
+            const val = String(s.value || '').trim();
+            if (lbl.startsWith('HTTP ') || lbl === 'Error' || lbl === 'Warning') {
+                if (val.startsWith('{') || val.includes('not logged into') || val.includes('error getting token')) {
+                    return false;
+                }
+            }
+            if (val.startsWith('{"code":') || val.includes('failed to get load code assist response')) {
+                return false;
+            }
+        }
+        return true;
+    });
 }
 
 // The panel cells. Each carries its own severity so the compact representation

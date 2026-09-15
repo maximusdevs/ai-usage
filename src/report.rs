@@ -100,9 +100,45 @@ async fn collect_entries(
         ));
     }
 
+    // Check if the live session on disk has switched to a different account (e.g. user logged into a new account on Antigravity / OpenAI).
+    let live_detected_email = all_tabs.iter().find_map(|tab| {
+        let prov_id = tab_id(tab);
+        crate::account_store::detect_provider_email(&prov_id, &config)
+    });
+
+    let effective_override = if refresh {
+        if let Some(live) = &live_detected_email {
+            if let Some(target) = account_override {
+                if !crate::account_store::accounts_match_or_prefix(live, target) {
+                    let _ = crate::active::write_account(live);
+                    Some(live.as_str())
+                } else {
+                    account_override
+                }
+            } else {
+                let _ = crate::active::write_account(live);
+                Some(live.as_str())
+            }
+        } else {
+            account_override
+        }
+    } else {
+        if let Some(target) = account_override {
+            let has_snap = crate::account_store::get_snapshot(target).is_some();
+            if !has_snap && let Some(live) = &live_detected_email {
+                let _ = crate::active::write_account(live);
+                Some(live.as_str())
+            } else {
+                account_override
+            }
+        } else {
+            account_override
+        }
+    };
+
     // If an explicit account override was requested, check if it's currently active.
     // If not active and not forced refresh, try loading its saved snapshot first.
-    if let Some(target_label) = account_override {
+    if let Some(target_label) = effective_override {
         let is_currently_active =
             config.resolve_active_account(None).as_deref() == Some(target_label);
         if !is_currently_active
@@ -110,6 +146,9 @@ async fn collect_entries(
             && let Some(mut snap) = crate::account_store::get_snapshot(target_label)
         {
             crate::account_store::update_snapshot_entries(&mut snap.entries, Utc::now());
+            for e in &mut snap.entries {
+                crate::account_store::sanitize_snapshot_entry(e);
+            }
             let info = AccountHeaderInfo {
                 label: snap.account_label,
                 user: snap.user,
@@ -124,7 +163,7 @@ async fn collect_entries(
         }
     }
 
-    let active_label = config.resolve_active_account(account_override);
+    let active_label = config.resolve_active_account(effective_override);
     let (tabs, account_info) = match active_label.as_deref() {
         Some(label) => {
             if let Some(acct) = config.find_account(label) {
@@ -289,11 +328,25 @@ async fn collect_entries(
 
         if is_live_for_target {
             let mut entry = entry_for(&client, &config, tab, refresh).await;
-            if entry.error.is_some() && !target_label_str.is_empty() {
+            let has_auth_error = entry.sections.iter().any(|s| match s {
+                ReportSection::Text { label, value } => {
+                    let lbl = label.trim();
+                    let val = value.trim();
+                    lbl.starts_with("HTTP 5")
+                        || lbl.starts_with("HTTP 401")
+                        || val.starts_with('{')
+                        || val.contains("not logged into")
+                        || val.contains("error getting token")
+                }
+                _ => false,
+            });
+
+            if (entry.error.is_some() || has_auth_error) && !target_label_str.is_empty() {
                 if let Some(snap) = crate::account_store::get_snapshot(target_label_str) {
                     if let Some(snap_e) = snap.entries.iter().find(|e| e.id == entry.id && e.error.is_none()) {
                         let mut se = snap_e.clone();
                         crate::account_store::update_snapshot_entries(std::slice::from_mut(&mut se), Utc::now());
+                        crate::account_store::sanitize_snapshot_entry(&mut se);
                         entry = se;
                     }
                 }
@@ -303,6 +356,24 @@ async fn collect_entries(
                     Some(target_user_str),
                     &entry,
                 );
+            }
+            // Sanitize entry sections so no internal failure or raw JSON is exposed
+            entry.sections.retain(|s| match s {
+                ReportSection::Text { label, value } => {
+                    let lbl = label.trim();
+                    let val = value.trim();
+                    !(lbl.starts_with("HTTP ")
+                        || val.starts_with('{')
+                        || val.contains("not logged into")
+                        || val.contains("error getting token"))
+                }
+                _ => true,
+            });
+            while matches!(entry.sections.last(), Some(ReportSection::Spacer)) {
+                entry.sections.pop();
+            }
+            if entry.sections.iter().any(|s| matches!(s, ReportSection::Metric { .. })) {
+                entry.stale = false;
             }
             entries.push(entry);
         } else {
@@ -329,6 +400,7 @@ async fn collect_entries(
                     std::slice::from_mut(&mut snap_e),
                     Utc::now(),
                 );
+                crate::account_store::sanitize_snapshot_entry(&mut snap_e);
                 entries.push(snap_e);
             } else {
                 let zeroed = zeroed_entry_for_tab(&config, tab);

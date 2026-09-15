@@ -271,6 +271,16 @@ assert.deepEqual(detailRows(null), []);
 // A block section keeps its free-form lines rather than being flattened away.
 assert.deepEqual(detailRows(openai)[0].body, ['balance: $4.10']);
 
+// Raw JSON errors and auth/logout text errors are suppressed ("apenas n mostre nada")
+const withErr = {
+    sections: [
+        { type: 'metric', label: 'Gemini', percent: 96, value: '96%', severity: 'critical' },
+        { type: 'text', label: 'HTTP 500', value: '{"code":"internal","message":"You are not logged into Antigravity"}' },
+    ],
+};
+assert.equal(detailRows(withErr).length, 1);
+assert.equal(detailRows(withErr)[0].label, 'Gemini');
+
 assert.deepEqual(panelCells(anthropic, {max: 2}).map(c => c.text), ['62%', '91%']);
 assert.deepEqual(panelCells(anthropic, {max: 2}).map(c => c.label), ['5h', '7d']);
 assert.deepEqual(panelCells(anthropic, {max: 1}).map(c => c.text), ['62%']);

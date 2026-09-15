@@ -261,6 +261,9 @@ PlasmoidItem {
     }
 
     function refresh(forced) {
+        if (forced) {
+            root.activeAccountOverride = "";
+        }
         const cmd = root.currentCommand(forced ? { refresh: true } : {});
         if (!Logic.shouldStartFetch(root.pendingCommand, cmd))
             return;
@@ -324,6 +327,9 @@ PlasmoidItem {
 
         root.failure = "";
         root.report = parsed;
+        if (parsed.account && parsed.account.label) {
+            root.activeAccountOverride = parsed.account.label;
+        }
     }
 
     function selectVendor(id) {
