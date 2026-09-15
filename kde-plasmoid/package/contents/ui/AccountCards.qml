@@ -144,7 +144,7 @@ ColumnLayout {
                             PlasmaComponents.Label {
                                 text: provCol.modelData.name || provCol.modelData.id
                                 font.bold: true
-                                font: Kirigami.Theme.smallFont
+                                font.pointSize: Kirigami.Theme.smallFont.pointSize
                                 color: Kirigami.Theme.highlightColor
                                 textFormat: Text.PlainText
                             }
@@ -178,7 +178,7 @@ ColumnLayout {
 
                                 PlasmaComponents.Label {
                                     text: metricRow.modelData.value || (metricRow.modelData.percent + "%")
-                                    font: Kirigami.Theme.smallFont
+                                    font.pointSize: Kirigami.Theme.smallFont.pointSize
                                     font.bold: (metricRow.modelData.percent ?? 0) >= 90
                                     color: Logic.severityColor(metricRow.modelData.severity, root.applet.colors) ?? Kirigami.Theme.textColor
                                     textFormat: Text.PlainText
