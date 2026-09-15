@@ -27,6 +27,9 @@
 # Multi-account mode: enable account switcher and historical snapshot tracking (true).
 # Set to false for individual session mode (tracks only current active machine session).
 # multi_account = true
+#
+# Segregate display by account (show all accounts with their respective providers):
+# account_segregation = false
 
 # Multi-provider accounts: group providers under a user identity and switch between them.
 # active_account = "personal"

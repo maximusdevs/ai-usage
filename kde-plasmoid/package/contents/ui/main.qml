@@ -80,6 +80,7 @@ PlasmoidItem {
     readonly property bool showName: Plasmoid.configuration.showName
     readonly property bool showAllProviders: Plasmoid.configuration.showAllProviders
     readonly property bool multiAccount: Plasmoid.configuration.multiAccount
+    readonly property bool accountSegregation: Plasmoid.configuration.accountSegregation
     readonly property bool showFullEmail: Plasmoid.configuration.showFullEmail
     readonly property bool showExtraModels: Plasmoid.configuration.showExtraModels
     readonly property var selectedExtraModels: Plasmoid.configuration.selectedExtraModels || []
@@ -285,7 +286,7 @@ PlasmoidItem {
 
     function simulateRenewal() {
         launcher.exec(Logic.buildSimulateRenewalCommand(Plasmoid.configuration.binaryPath));
-        root.refresh(false);
+        simulateTimer.restart();
     }
 
     // Backstop only. timeout(1) in the spawned command is what bounds and kills
@@ -376,17 +377,11 @@ PlasmoidItem {
         onTriggered: root.nowMs = Date.now()
     }
 
-    // Fast periodic check for local changes (account switch, simulated renewals, quota renewals).
-    // This executes `usage --json` without `--refresh`, taking < 6ms and making zero network requests.
+    // One-shot timer after simulating renewals to pick up the test file
     Timer {
-        id: localStatePoller
-        interval: 2000
-        running: true
-        repeat: true
-        onTriggered: {
-            if (root.pendingCommand === "") {
-                root.refresh(false);
-            }
-        }
+        id: simulateTimer
+        interval: 350
+        repeat: false
+        onTriggered: root.refresh(false)
     }
 }

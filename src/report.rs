@@ -817,6 +817,80 @@ fn render_json_for_primary(entries: &[Entry], primary: Option<&str>) -> String {
     render_json_with_account(entries, primary, None)
 }
 
+fn extract_account_providers(
+    account_label: &str,
+    is_active: bool,
+    active_entries: &[Entry],
+    snapshots: &[crate::account_store::AccountSnapshot],
+) -> Vec<serde_json::Value> {
+    let mut providers = Vec::new();
+    if is_active && !active_entries.is_empty() {
+        for entry in active_entries {
+            let metrics: Vec<serde_json::Value> = entry
+                .sections
+                .iter()
+                .filter_map(|s| match s {
+                    ReportSection::Metric {
+                        label,
+                        percent,
+                        value,
+                        severity,
+                        detail,
+                        ..
+                    } => Some(json!({
+                        "label": label,
+                        "percent": percent,
+                        "value": value,
+                        "severity": severity,
+                        "detail": detail,
+                    })),
+                    _ => None,
+                })
+                .collect();
+            providers.push(json!({
+                "id": entry.id,
+                "name": entry.display_name,
+                "icon": entry.icon,
+                "metrics": metrics,
+            }));
+        }
+    } else if let Some(snap) = snapshots
+        .iter()
+        .find(|s| crate::account_store::accounts_match_or_prefix(&s.account_label, account_label))
+    {
+        for entry in &snap.entries {
+            let metrics: Vec<serde_json::Value> = entry
+                .sections
+                .iter()
+                .filter_map(|s| match s {
+                    ReportSection::Metric {
+                        label,
+                        percent,
+                        value,
+                        severity,
+                        detail,
+                        ..
+                    } => Some(json!({
+                        "label": label,
+                        "percent": percent,
+                        "value": value,
+                        "severity": severity,
+                        "detail": detail,
+                    })),
+                    _ => None,
+                })
+                .collect();
+            providers.push(json!({
+                "id": entry.id,
+                "name": entry.display_name,
+                "icon": entry.icon,
+                "metrics": metrics,
+            }));
+        }
+    }
+    providers
+}
+
 fn render_json_with_account(
     entries: &[Entry],
     primary: Option<&str>,
@@ -835,28 +909,33 @@ fn render_json_with_account(
     if let Ok(cfg) = Config::load() {
         if cfg.ui.multi_account() {
             let active_lbl = cfg.resolve_active_account(account.map(|a| a.label.as_str()));
+            let snapshots = crate::account_store::all_snapshots();
             let mut acct_list = Vec::new();
             for a in &cfg.accounts {
                 let is_active = active_lbl
                     .as_deref()
                     .map(|al| al.eq_ignore_ascii_case(&a.label))
                     .unwrap_or(false);
+                let provs = extract_account_providers(&a.label, is_active, entries, &snapshots);
                 acct_list.push(json!({
                     "label": a.label,
                     "user": a.user,
                     "active": is_active,
+                    "providers": provs,
                 }));
             }
-            for snap in crate::account_store::all_snapshots() {
+            for snap in &snapshots {
                 if !acct_list.iter().any(|item| item["label"].as_str() == Some(&snap.account_label)) {
                     let is_active = active_lbl
                         .as_deref()
                         .map(|al| al.eq_ignore_ascii_case(&snap.account_label))
                         .unwrap_or(false);
+                    let provs = extract_account_providers(&snap.account_label, is_active, entries, &snapshots);
                     acct_list.push(json!({
                         "label": snap.account_label,
                         "user": snap.user,
                         "active": is_active,
+                        "providers": provs,
                     }));
                 }
             }

@@ -42,6 +42,15 @@ Item {
         return full.entry.extraModels.filter(m => selected.indexOf(m) !== -1);
     }
 
+    property int activeDisplayMode: full.applet.accountSegregation ? 1 : 0
+
+    Connections {
+        target: full.applet
+        function onAccountSegregationChanged() {
+            full.activeDisplayMode = full.applet.accountSegregation ? 1 : 0;
+        }
+    }
+
     // An Item defaults to implicitHeight 0 and the popup sizes itself from the
     // implicit size, so without this the buttons render off-canvas. The
     // maximum is what makes the popup SHRINK again when a smaller vendor is
@@ -119,7 +128,6 @@ Item {
                 PlasmaComponents.ToolTip.visible: hovered
                 PlasmaComponents.ToolTip.delay: Kirigami.Units.toolTipDelay
                 onClicked: {
-                    full.applet.activeAccountOverride = "";
                     full.applet.refresh(true);
                 }
             }
@@ -145,10 +153,33 @@ Item {
             }
         }
 
-        // --- account selector ----------------------------------------------
+        // --- view mode switcher (by provider vs by account) ----------------
         RowLayout {
             Layout.fillWidth: true
             visible: full.applet.multiAccount && full.applet.accounts.length > 0
+            spacing: Kirigami.Units.smallSpacing
+
+            PlasmaComponents.Button {
+                Layout.fillWidth: true
+                text: i18n("Por Provedor")
+                checkable: true
+                checked: full.activeDisplayMode === 0
+                onClicked: full.activeDisplayMode = 0
+            }
+
+            PlasmaComponents.Button {
+                Layout.fillWidth: true
+                text: i18n("Por Conta (Segregação)")
+                checkable: true
+                checked: full.activeDisplayMode === 1
+                onClicked: full.activeDisplayMode = 1
+            }
+        }
+
+        // --- account selector ----------------------------------------------
+        RowLayout {
+            Layout.fillWidth: true
+            visible: full.activeDisplayMode === 0 && full.applet.multiAccount && full.applet.accounts.length > 0
             spacing: Kirigami.Units.smallSpacing
 
             PlasmaComponents.Label {
@@ -200,7 +231,7 @@ Item {
         Flow {
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.smallSpacing
-            visible: full.applet.viewMode === 0 && full.applet.tabs.length > 1
+            visible: full.activeDisplayMode === 0 && full.applet.viewMode === 0 && full.applet.tabs.length > 1
             spacing: Kirigami.Units.smallSpacing
 
             Repeater {
@@ -313,7 +344,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.smallSpacing
-            visible: full.status !== ""
+            visible: full.activeDisplayMode === 0 && full.status !== ""
             implicitHeight: visible ? statusLabel.implicitHeight + Kirigami.Units.largeSpacing : 0
             radius: Kirigami.Units.cornerRadius
             color: Qt.alpha(full.applet.statusIsUrgent()
@@ -337,12 +368,12 @@ Item {
         Kirigami.Separator {
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.smallSpacing
-            visible: full.applet.viewMode === 0 && full.rows.length > 0
+            visible: full.activeDisplayMode === 0 && full.applet.viewMode === 0 && full.rows.length > 0
         }
 
         PlasmaComponents.Label {
             Layout.fillWidth: true
-            visible: full.applet.viewMode === 0 && full.rows.length > 0
+            visible: full.activeDisplayMode === 0 && full.applet.viewMode === 0 && full.rows.length > 0
             font: Kirigami.Theme.smallFont
             opacity: 0.6
             text: i18n("USAGE & BALANCE")
@@ -350,7 +381,7 @@ Item {
         }
 
         Repeater {
-            model: full.applet.viewMode === 0 ? full.rows : []
+            model: full.activeDisplayMode === 0 && full.applet.viewMode === 0 ? full.rows : []
 
             UsageRow {
                 required property var modelData
@@ -366,12 +397,12 @@ Item {
         Kirigami.Separator {
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.smallSpacing
-            visible: full.applet.viewMode === 0 && full.displayedExtraModels().length > 0
+            visible: full.activeDisplayMode === 0 && full.applet.viewMode === 0 && full.displayedExtraModels().length > 0
         }
 
         PlasmaComponents.Label {
             Layout.fillWidth: true
-            visible: full.applet.viewMode === 0 && full.displayedExtraModels().length > 0
+            visible: full.activeDisplayMode === 0 && full.applet.viewMode === 0 && full.displayedExtraModels().length > 0
             font: Kirigami.Theme.smallFont
             opacity: 0.6
             text: i18n("AVAILABLE MODELS (ANTIGRAVITY POOL)")
@@ -379,7 +410,7 @@ Item {
         }
 
         Repeater {
-            model: full.applet.viewMode === 0 ? full.displayedExtraModels() : []
+            model: full.activeDisplayMode === 0 && full.applet.viewMode === 0 ? full.displayedExtraModels() : []
 
             delegate: RowLayout {
                 id: extraModelRow
@@ -424,7 +455,7 @@ Item {
         PlasmaComponents.Label {
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.smallSpacing
-            visible: !full.entry && full.status === "" && full.applet.viewMode === 0
+            visible: full.activeDisplayMode === 0 && !full.entry && full.status === "" && full.applet.viewMode === 0
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.WordWrap
             opacity: 0.6
@@ -439,7 +470,14 @@ Item {
         // layout never refetches.
         VendorCards {
             Layout.fillWidth: true
-            visible: full.applet.viewMode === 1
+            visible: full.activeDisplayMode === 0 && full.applet.viewMode === 1
+            applet: full.applet
+        }
+
+        // --- account segregation cards --------------------------------------
+        AccountCards {
+            Layout.fillWidth: true
+            visible: full.activeDisplayMode === 1
             applet: full.applet
         }
 

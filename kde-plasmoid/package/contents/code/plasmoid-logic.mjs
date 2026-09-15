@@ -210,10 +210,30 @@ function normalizeAccount(raw) {
     const user = safeText(raw.user, 120).trim();
     if (!label && !user)
         return null;
+    const providers = Array.isArray(raw.providers)
+        ? raw.providers.map(p => {
+            if (!p || typeof p !== 'object') return null;
+            return {
+                id: safeText(p.id, 60),
+                name: safeText(p.name, 60),
+                icon: safeText(p.icon, 30),
+                metrics: Array.isArray(p.metrics)
+                    ? p.metrics.map(m => ({
+                        label: safeText(m.label, 60),
+                        percent: typeof m.percent === 'number' ? m.percent : null,
+                        value: safeText(m.value, 30),
+                        severity: safeText(m.severity, 20),
+                        detail: safeText(m.detail, 60),
+                    }))
+                    : []
+            };
+        }).filter(Boolean)
+        : [];
     return {
         label: label || user,
         user: user || label,
         active: raw.active === true,
+        providers: providers,
     };
 }
 

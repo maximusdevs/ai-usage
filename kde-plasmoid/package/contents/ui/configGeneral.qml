@@ -14,6 +14,7 @@ KCM.SimpleKCM {
 
     property alias cfg_interval: intervalSpin.value
     property alias cfg_multiAccount: multiAccountCheck.checked
+    property alias cfg_accountSegregation: accountSegregationCheck.checked
     property alias cfg_commandTimeout: commandTimeoutSpin.value
     property alias cfg_binaryPath: binaryField.text
     property alias cfg_terminalCommand: terminalField.text
@@ -415,6 +416,22 @@ KCM.SimpleKCM {
         QQC2.CheckBox {
             id: showFullEmailCheck
             text: i18n("Show full email address (off = username only)")
+        }
+
+        QQC2.CheckBox {
+            id: accountSegregationCheck
+            text: i18n("Segregate display by account (show accounts with their providers)")
+            enabled: multiAccountCheck.checked
+        }
+
+        QQC2.Label {
+            visible: accountSegregationCheck.checked
+            text: i18n("Displays each account on its own card with its active providers and model percentages, paginated cleanly.")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+            textFormat: Text.PlainText
         }
 
         QQC2.CheckBox {

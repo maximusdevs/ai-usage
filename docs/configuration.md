@@ -26,6 +26,7 @@ ai-usagebar-tui --config ./config.test.toml
 #                         # | minimax | kiro | nous | opencode-go | commandcode
 # refresh_interval = 300  # Refresh interval in seconds between usage checks (default: 300)
 # multi_account = true    # true: enable multi-account switcher; false: individual session only
+# account_segregation = false # true: show all accounts with their respective providers
 
 [context]
 enabled = false           # opt in, then press c in ai-usagebar-tui

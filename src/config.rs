@@ -118,6 +118,8 @@ pub struct UiConfig {
     pub multi_account: Option<bool>,
     /// Refresh interval in seconds.
     pub refresh_interval: Option<u64>,
+    /// Whether to segregate display by account (showing all accounts and their providers).
+    pub account_segregation: Option<bool>,
 }
 
 impl UiConfig {
@@ -143,6 +145,10 @@ impl UiConfig {
 
     pub fn refresh_interval(&self) -> u64 {
         self.refresh_interval.unwrap_or(300)
+    }
+
+    pub fn account_segregation(&self) -> bool {
+        self.account_segregation.unwrap_or(false)
     }
 }
 

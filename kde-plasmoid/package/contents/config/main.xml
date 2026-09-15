@@ -40,6 +40,10 @@
       <default>true</default>
     </entry>
 
+    <entry name="accountSegregation" type="Bool">
+      <default>false</default>
+    </entry>
+
     <!-- Aggregate reports may contact several providers sequentially. Keep the
          process bound configurable, but never short enough to disable the
          wrapper or kill a normal multi-provider run. -->
