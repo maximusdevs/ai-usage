@@ -57,7 +57,7 @@ ColumnLayout {
             row: modelData
             colors: rows.applet.colors
             resetText: rows.applet.resetText(modelData.resetAt)
-            showBar: rows.applet.showBars
+            showBar: true
         }
     }
 

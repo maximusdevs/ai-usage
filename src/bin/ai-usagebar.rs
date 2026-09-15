@@ -37,6 +37,10 @@ fn main() {
         std::process::exit(ai_usagebar::detect::run_cli(*all, *json));
     }
 
+    if let Some(Command::Provider { action }) = &cli.command {
+        std::process::exit(ai_usagebar::provider_cli::run(action));
+    }
+
     // Static catalog: it reads config and the filesystem, never the network,
     // so it needs no tokio runtime and must not go through the always-exit-0
     // Waybar contract.
@@ -72,8 +76,25 @@ fn main() {
     // An administrative report, not the widget: it needs the runtime but must
     // not go through the always-exit-0 Waybar contract — a script piping this
     // deserves a real exit code.
-    if let Some(Command::Usage { json }) = &cli.command {
-        std::process::exit(rt.block_on(ai_usagebar::report::run(*json)));
+    if let Some(Command::Usage { json, account, refresh }) = &cli.command {
+        let acct = account.as_deref().or(cli.account.as_deref());
+        std::process::exit(rt.block_on(ai_usagebar::report::run(*json, acct, *refresh)));
+    }
+    if let Some(Command::Monitor {
+        interval,
+        once,
+        test,
+        simulate_renewal,
+        clear_renewals,
+    }) = &cli.command
+    {
+        std::process::exit(rt.block_on(ai_usagebar::monitor::run(
+            *interval,
+            *once,
+            *test,
+            *simulate_renewal,
+            *clear_renewals,
+        )));
     }
     let code = rt.block_on(run(cli));
     std::process::exit(code);

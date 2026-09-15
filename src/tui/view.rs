@@ -130,16 +130,20 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
             .map(tab_label)
             .unwrap_or_else(|| "no vendor".to_string())
     };
-    let line = Line::from(vec![
+    let mut header_spans = vec![
         theme.accent("  Usage dashboard"),
         theme.muted(" · "),
         theme.span(format!("{} tabs", app.tabs_meta.len())),
-        theme.muted(" · "),
-        theme.span(format!("active {active}")),
-        theme.muted(" · "),
-        theme.muted(header_refresh_text(app)),
-    ]);
-    f.render_widget(Paragraph::new(line), inner);
+    ];
+    if let Some(ref acct) = app.active_account {
+        header_spans.push(theme.muted(" · "));
+        header_spans.push(theme.span(format!("account: {acct}")));
+    }
+    header_spans.push(theme.muted(" · "));
+    header_spans.push(theme.span(format!("active {active}")));
+    header_spans.push(theme.muted(" · "));
+    header_spans.push(theme.muted(header_refresh_text(app)));
+    f.render_widget(Paragraph::new(Line::from(header_spans)), inner);
 }
 
 /// The header's refresh stamp, read from the ACTIVE tab's own `fetched_at`.
@@ -152,6 +156,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 fn header_refresh_text(app: &App) -> String {
     let fetched_at = match app.tabs.get(app.active) {
         Some(TabState::Ready(ready)) => ready.fetched_at,
+        Some(TabState::Snapshot(snap)) => Some(snap.saved_at),
         _ => None,
     };
     match fetched_at {
@@ -350,6 +355,36 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
                     spans.push(theme.muted("  ↻"));
                 }
             }
+            Some(TabState::Snapshot(s)) => {
+                if let Some(crate::account_store::ReportSection::Metric { percent, .. }) =
+                    s.entry.sections.iter().find(|sec| {
+                        matches!(sec, crate::account_store::ReportSection::Metric { .. })
+                    })
+                {
+                    let p = *percent;
+                    let filled = (p.clamp(0, 100) as usize * OVERVIEW_BAR_W).div_ceil(100);
+                    let sev_color = severity_color(
+                        &app.theme,
+                        &theme,
+                        crate::pango::severity_for(i32::from(p)),
+                    );
+                    spans.push(Span::styled(
+                        "█".repeat(filled),
+                        Style::default().fg(sev_color),
+                    ));
+                    let empty =
+                        color(&app.theme.bar_empty).unwrap_or(theme.palette.selected_background);
+                    spans.push(Span::styled(
+                        "░".repeat(OVERVIEW_BAR_W - filled),
+                        Style::default().fg(empty),
+                    ));
+                    spans.push(theme.span("  "));
+                }
+                if let Some(plan) = &s.entry.plan {
+                    spans.push(theme.muted(format!("{plan}  ")));
+                }
+                spans.push(theme.muted("⏸ snapshot"));
+            }
             Some(TabState::Error { .. }) => spans.push(Span::styled(
                 "error",
                 Style::default().fg(theme.palette.error),
@@ -367,6 +402,7 @@ fn tab_status(tab: Option<&TabState>, refreshing: bool) -> &'static str {
         Some(TabState::Ready(_)) if refreshing => "refreshing",
         Some(TabState::Loading) => "fetching",
         Some(TabState::Error { .. }) => "error",
+        Some(TabState::Snapshot(_)) => "snapshot",
         Some(TabState::Ready(ready)) if ready.stale => "stale cache",
         Some(TabState::Ready(ready))
             if ready
@@ -393,6 +429,9 @@ fn draw_footer(f: &mut Frame, app: &App, area: ratatui::layout::Rect) {
         KeyBinding::new("R", "refresh all"),
         KeyBinding::new("s", "settings"),
     ];
+    if app.has_accounts {
+        bindings.push(KeyBinding::new("a", "account"));
+    }
     if app.context_enabled {
         bindings.push(KeyBinding::new("c", "context"));
     }
@@ -644,5 +683,34 @@ mod tests {
             "vendor nav must be fully hidden: {rows:?}"
         );
         assert!(rows[0].contains(" Overview "), "{:?}", rows[0]);
+    }
+
+    #[test]
+    fn account_header_and_footer_rendered_when_active() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut app = app_with(vec![TabState::Loading, TabState::Loading]);
+        app.active_account = Some("personal".into());
+        app.has_accounts = true;
+
+        let mut terminal = Terminal::new(TestBackend::new(160, 24)).unwrap();
+        terminal.draw(|frame| draw(frame, &app)).unwrap();
+        let content = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+
+        assert!(
+            content.contains("account: personal"),
+            "header missing account: {content}"
+        );
+        assert!(
+            content.contains("account"),
+            "footer missing account binding: {content}"
+        );
     }
 }

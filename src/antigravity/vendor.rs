@@ -29,6 +29,13 @@ pub const DEFAULT_FORMAT: &str = "{icon} {session_pct}% · {weekly_pct}%";
 pub const GROUP_PRIMARY: &str = "Gemini";
 pub const GROUP_THIRD_PARTY: &str = "Claude & GPT OSS";
 
+/// Detailed third-party models included in Antigravity's Claude & GPT pool.
+pub const ANTIGRAVITY_THIRD_PARTY_MODELS: &[&str] = &[
+    "Claude Sonnet 4.6 (Thinking)",
+    "Claude Opus 4.6 (Thinking)",
+    "GPT-OSS 120B (Medium)",
+];
+
 /// Every window this vendor reports, in dropdown order: the two 5-hour windows
 /// under "Session", then the two weekly ones under "Weekly".
 fn windows(snap: &AntigravitySnapshot) -> [(&'static str, Option<&UsageWindow>); 4] {
@@ -280,6 +287,7 @@ mod tests {
         AntigravitySnapshot {
             plan: "Google AI Pro".into(),
             account: "acct:test".into(),
+            user_email: None,
             source: crate::usage::AntigravitySource::Local,
             session: Some(window(43, "2026-07-22T14:00:00Z", false)),
             weekly: Some(window(8, "2026-07-28T17:39:58Z", true)),

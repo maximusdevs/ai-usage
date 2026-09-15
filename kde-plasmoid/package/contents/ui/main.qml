@@ -39,7 +39,74 @@ PlasmoidItem {
     readonly property var entry: Logic.entryFor(root.report, root.vendor)
     readonly property var tabs: Logic.vendorTabs(root.report, root.vendor)
     readonly property var compactCells: Logic.panelCells(root.entry, {max: 2})
+    readonly property var accounts: (root.report && root.report.accounts) || []
+    property string activeAccountOverride: ""
+    readonly property var rawRenewals: (root.report && root.report.renewals) || []
+    property var dismissedRenewalIds: Plasmoid.configuration.dismissedRenewals || []
+    property bool showRenewalNotice: false
+
+    readonly property var activeRenewals: Logic.filterActiveRenewals(
+        root.rawRenewals, root.dismissedRenewalIds)
+
+    function dismissActiveRenewals() {
+        var set = [];
+        var i;
+        var existing = root.dismissedRenewalIds || [];
+        for (i = 0; i < existing.length; i++) {
+            set.push(existing[i]);
+        }
+        var raw = root.rawRenewals || [];
+        for (i = 0; i < raw.length; i++) {
+            var r = raw[i];
+            if (r && r.id && set.indexOf(r.id) === -1) {
+                set.push(r.id);
+            }
+        }
+        root.dismissedRenewalIds = set;
+        Plasmoid.configuration.dismissedRenewals = set;
+        root.showRenewalNotice = false;
+    }
+
+    function triggerRenewalNoticeToggle() {
+        if (root.showRenewalNotice) {
+            dismissActiveRenewals();
+        } else {
+            root.showRenewalNotice = true;
+            root.expanded = true;
+        }
+    }
+
     readonly property bool showBars: Plasmoid.configuration.showBars
+    readonly property bool showPercent: Plasmoid.configuration.showPercent
+    readonly property bool showIcon: Plasmoid.configuration.showIcon
+    readonly property bool showName: Plasmoid.configuration.showName
+    readonly property bool showAllProviders: Plasmoid.configuration.showAllProviders
+    readonly property bool showFullEmail: Plasmoid.configuration.showFullEmail
+    readonly property bool showExtraModels: Plasmoid.configuration.showExtraModels
+    readonly property var selectedExtraModels: Plasmoid.configuration.selectedExtraModels || []
+    readonly property int compactDisplayMode: Plasmoid.configuration.compactDisplayMode
+
+    readonly property var compactEntries: {
+        const entries = (root.report && root.report.entries) || [];
+        if (!root.showAllProviders) {
+            const single = root.entry;
+            if (!single) return [];
+            return [{
+                id: single.id,
+                label: single.label,
+                cells: root.compactCells,
+                status: single.status,
+                failure: single.status === "error"
+            }];
+        }
+        return entries.map(e => ({
+            id: e.id,
+            label: e.label,
+            cells: Logic.panelCells(e, {max: 2}),
+            status: e.status,
+            failure: e.status === "error"
+        }));
+    }
 
     // Read back as the integer index of the Enum choice (0 = tabs, 1 = cards).
     readonly property int viewMode: Plasmoid.configuration.viewMode
@@ -97,7 +164,7 @@ PlasmoidItem {
         PlasmaCore.Action {
             text: i18n("Refresh now")
             icon.name: "view-refresh"
-            onTriggered: root.refresh()
+            onTriggered: root.refresh(true)
         },
         PlasmaCore.Action {
             text: i18n("Open TUI")
@@ -186,17 +253,27 @@ PlasmoidItem {
         }
     }
 
-    function currentCommand() {
-        return Logic.buildCommand(Plasmoid.configuration.binaryPath, root.fetchTimeoutSecs);
+    function currentCommand(options) {
+        const opts = options || {};
+        if (root.activeAccountOverride && !opts.account)
+            opts.account = root.activeAccountOverride;
+        return Logic.buildCommand(Plasmoid.configuration.binaryPath, root.fetchTimeoutSecs, opts);
     }
 
-    function refresh() {
-        const cmd = root.currentCommand();
+    function refresh(forced) {
+        const cmd = root.currentCommand(forced ? { refresh: true } : {});
         if (!Logic.shouldStartFetch(root.pendingCommand, cmd))
             return;
         root.pendingCommand = cmd;
         watchdog.restart();
         reader.exec(cmd);
+    }
+
+    function switchAccount(label) {
+        if (!label) return;
+        root.activeAccountOverride = label;
+        launcher.exec(Logic.buildAccountSwitchCommand(Plasmoid.configuration.binaryPath, label));
+        root.refresh(true);
     }
 
     // Backstop only. timeout(1) in the spawned command is what bounds and kills

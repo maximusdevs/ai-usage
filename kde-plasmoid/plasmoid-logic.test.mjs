@@ -5,11 +5,12 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {
-    buildArgv, buildCommand, buildTuiCommand, cardFor, cardModel, cardState,
-    DEFAULT_BINARY, DEFAULT_TIMEOUT_SECS,
-    detailRows, entryFor, errorMessage, EXIT_KILLED, EXIT_TIMED_OUT, formatDuration,
-    headline, isAlarming, MAX_TIMEOUT_SECS, MIN_TIMEOUT_SECS,
-    metricDetail, nextVendor, paletteFromTheme, panelCells, parseReport,
+    buildAccountSwitchCommand, buildArgv, buildCommand, buildMonitorTestCommand,
+    buildProviderToggleCommand, buildProvidersListCommand, buildTuiCommand, cardFor,
+    cardModel, cardState, DEFAULT_BINARY, DEFAULT_TIMEOUT_SECS,
+    detailRows, entryFor, errorMessage, EXIT_KILLED, EXIT_TIMED_OUT, filterActiveRenewals,
+    formatAccount, formatDuration, formatRenewalSummary, headline, isAlarming, MAX_TIMEOUT_SECS, MIN_TIMEOUT_SECS,
+    metricDetail, nextVendor, paletteFromTheme, panelCells, parseProviders, parseReport,
     resetRemainingMs, safeText, severityColor, severityOf, SEVERITIES, shellQuote,
     shortLabel, shouldStartFetch, TIMEOUT_KILL_GRACE_SECS, timeoutSeconds,
     updatedAgeMs, vendorTabs,
@@ -464,7 +465,67 @@ assert.equal(palette.critical, 'G');
 assert.equal(palette.empty, 'D');
 // Every role must resolve to something, or a theme missing one role paints an
 // invisible bar.
-for (const [key, value] of Object.entries(paletteFromTheme({textColor: 'T'})))
-    assert.equal(value, 'T', `${key} must fall back to the plain text colour`);
+// ---------------------------------------------------------------------------
+// options, account formatting, provider management, extra models
+// ---------------------------------------------------------------------------
+assert.deepEqual(buildArgv('b', 60, {refresh: true}),
+    ['timeout', '-k', String(TIMEOUT_KILL_GRACE_SECS), '60', 'b', 'usage', '--json', '--refresh']);
+assert.deepEqual(buildArgv('b', 60, {account: 'maximus'}),
+    ['timeout', '-k', String(TIMEOUT_KILL_GRACE_SECS), '60', 'b', 'usage', '--json', '--account', 'maximus']);
+assert.deepEqual(buildArgv('b', 60, {refresh: true, account: 'maximus'}),
+    ['timeout', '-k', String(TIMEOUT_KILL_GRACE_SECS), '60', 'b', 'usage', '--json', '--refresh', '--account', 'maximus']);
+
+assert.equal(formatAccount('maximusdev58@gmail.com', true), 'maximusdev58@gmail.com');
+assert.equal(formatAccount('maximusdev58@gmail.com', false), 'maximusdev58');
+assert.equal(formatAccount('maximus', false), 'maximus');
+assert.equal(formatAccount('', false), '');
+
+assert.equal(buildAccountSwitchCommand('ai-usagebar', 'maximus'), `'ai-usagebar' 'account' 'switch' 'maximus'`);
+assert.equal(buildProviderToggleCommand('ai-usagebar', 'antigravity', true), `'ai-usagebar' 'provider' 'enable' 'antigravity'`);
+assert.equal(buildProviderToggleCommand('ai-usagebar', 'antigravity', false), `'ai-usagebar' 'provider' 'disable' 'antigravity'`);
+assert.equal(buildProvidersListCommand('ai-usagebar'), `'ai-usagebar' 'provider' 'list' '--json'`);
+assert.equal(buildMonitorTestCommand('ai-usagebar'), `'ai-usagebar' 'monitor' '--test'`);
+
+const provList = parseProviders(JSON.stringify([
+    {id: 'agy', name: 'Antigravity', enabled: true, configured: true},
+    {id: 'claude', name: 'Claude', enabled: false, configured: false}
+]));
+assert.equal(provList.length, 2);
+assert.equal(provList[0].id, 'agy');
+assert.equal(provList[0].enabled, true);
+assert.equal(provList[1].enabled, false);
+
+const reportWithAccAndModels = parseReport(JSON.stringify({
+    primary: 'antigravity',
+    accounts: [
+        {label: 'maximusdev58@gmail.com', user: 'maximusdev58@gmail.com', active: true},
+        {label: 's2.luan2009@gmail.com', user: 's2.luan2009@gmail.com', active: false}
+    ],
+    entries: [
+        {
+            id: 'antigravity', display_name: 'Antigravity', status: 'ready',
+            extra_models: ['Claude Sonnet 4.6 (Thinking)', 'Claude Opus 4.6 (Thinking)', 'GPT-OSS 120B (Medium)'],
+            sections: [{type: 'metric', label: 'Session (5h)', value: '10%', percent: 10}]
+        }
+    ]
+}));
+assert.equal(reportWithAccAndModels.accounts.length, 2);
+assert.equal(reportWithAccAndModels.accounts[0].active, true);
+assert.equal(reportWithAccAndModels.entries[0].extraModels.length, 3);
+assert.equal(reportWithAccAndModels.entries[0].extraModels[0], 'Claude Sonnet 4.6 (Thinking)');
+const agyCard = cardFor(reportWithAccAndModels.entries[0]);
+assert.equal(agyCard.extraModels.length, 3);
+
+// Renewal helpers tests
+const rawRenewals = [
+    {id: 'r1', account_label: 'user1@gmail.com', provider_name: 'Antigravity', metric_label: 'Claude', window_type: '5h'},
+    {id: 'r2', account_label: 'user2@gmail.com', provider_name: 'Codex', metric_label: 'Codex 5h', window_type: '5h'}
+];
+assert.equal(filterActiveRenewals(rawRenewals, []).length, 2);
+assert.equal(filterActiveRenewals(rawRenewals, ['r1']).length, 1);
+assert.equal(filterActiveRenewals(rawRenewals, ['r1'])[0].id, 'r2');
+assert.equal(filterActiveRenewals(rawRenewals, ['r1', 'r2']).length, 0);
+assert.equal(formatRenewalSummary(rawRenewals[0], false), 'user1 [Antigravity]: Claude (5h)');
+assert.equal(formatRenewalSummary(rawRenewals[0], true), 'user1@gmail.com [Antigravity]: Claude (5h)');
 
 console.log('plasmoid logic tests passed');

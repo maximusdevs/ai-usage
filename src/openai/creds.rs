@@ -85,6 +85,21 @@ impl Tokens {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
     }
+
+    /// User email address from the id_token's standard `email` claim (or profile claim).
+    pub fn email_from_id_token(&self) -> Option<String> {
+        let claims = crate::jwt::claims(&self.id_token)?;
+        claims
+            .get("email")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                claims
+                    .get("https://api.openai.com/profile")
+                    .and_then(|v| v.get("email"))
+                    .and_then(|v| v.as_str())
+            })
+            .map(|s| s.to_string())
+    }
 }
 
 /// Parse a JWT's `exp` claim. Returns None for malformed tokens.

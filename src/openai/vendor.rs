@@ -392,6 +392,7 @@ mod tests {
     fn sample() -> OpenAiSnapshot {
         OpenAiSnapshot {
             plan: "ChatGPT Plus".into(),
+            user_email: None,
             session: Some(UsageWindow {
                 utilization_pct: 1,
                 resets_at: Some(Utc::now() + chrono::Duration::hours(5)),

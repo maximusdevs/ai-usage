@@ -69,34 +69,23 @@ struct SectionBuilder(Vec<SectionProjection>);
 
 impl SectionBuilder {
     fn new(sections: Vec<Section>) -> Self {
-        Self(
-            sections
-                .into_iter()
-                .map(|section| {
-                    assert!(
-                        !matches!(section, Section::Metric { .. }),
-                        "metric sections must declare reset metadata with push_metric"
-                    );
-                    SectionProjection {
-                        section,
-                        reset_at: None,
-                        window: None,
-                    }
-                })
-                .collect(),
-        )
+        let mut builder = Self(Vec::new());
+        for section in sections {
+            builder.push(section);
+        }
+        builder
     }
 
     fn push(&mut self, section: Section) {
-        assert!(
-            !matches!(section, Section::Metric { .. }),
-            "metric sections must declare reset metadata with push_metric"
-        );
-        self.0.push(SectionProjection {
-            section,
-            reset_at: None,
-            window: None,
-        });
+        if matches!(section, Section::Metric { .. }) {
+            self.push_metric(section, None);
+        } else {
+            self.0.push(SectionProjection {
+                section,
+                reset_at: None,
+                window: None,
+            });
+        }
     }
 
     /// A metric whose window length is not known exactly (a calendar month,
@@ -403,6 +392,71 @@ pub(crate) fn sections_with_metadata_for(
                 },
             ]);
             SectionBuilder::new(rows)
+        }
+        TabState::Snapshot(s) => {
+            let mut builder = SectionBuilder(Vec::new());
+            let title_left = s
+                .entry
+                .plan
+                .clone()
+                .unwrap_or_else(|| s.entry.display_name.clone());
+            let title_right = format!("Snapshot ({})", local_time_hms(s.saved_at));
+            builder.push(Section::Title {
+                left: title_left,
+                right: Some(title_right),
+            });
+            for sec in &s.entry.sections {
+                match sec {
+                    crate::account_store::ReportSection::Metric {
+                        label,
+                        percent,
+                        value,
+                        detail,
+                        severity,
+                        reset_at,
+                        window_secs,
+                    } => {
+                        let sev = match severity.as_str() {
+                            "critical" => PaceSeverity::Critical,
+                            "high" => PaceSeverity::High,
+                            "mid" => PaceSeverity::Mid,
+                            _ => PaceSeverity::Low,
+                        };
+                        let m = Section::Metric {
+                            label: label.clone(),
+                            pct: *percent,
+                            severity: sev,
+                            value_label: value.clone(),
+                            footnote: detail.clone(),
+                        };
+                        if let Some(w) = window_secs {
+                            builder.push_metric_in_window(
+                                m,
+                                *reset_at,
+                                chrono::Duration::seconds(*w as i64),
+                            );
+                        } else {
+                            builder.push_metric(m, *reset_at);
+                        }
+                    }
+                    crate::account_store::ReportSection::Text { label, value } => {
+                        builder.push(Section::Text {
+                            label: label.clone(),
+                            value: value.clone(),
+                        });
+                    }
+                    crate::account_store::ReportSection::Block { label, body } => {
+                        builder.push(Section::Block {
+                            label: label.clone(),
+                            body: body.clone(),
+                        });
+                    }
+                    crate::account_store::ReportSection::Spacer => {
+                        builder.push(Section::Spacer);
+                    }
+                }
+            }
+            builder
         }
         TabState::Ready(r) => {
             let snapshot = &r.snapshot;
@@ -848,6 +902,20 @@ fn antigravity_sections(
         if let Some(w) = third_party {
             push_window(&mut v, GROUP_THIRD_PARTY, w, now, 5, false);
         }
+    }
+    if crate::config::Config::load()
+        .map(|c| c.ui.show_extra_models())
+        .unwrap_or(false)
+        && (s.third_party_session.is_some() || s.third_party_weekly.is_some())
+    {
+        v.push(Section::Spacer);
+        v.push(Section::Block {
+            label: "Claude & GPT Models".into(),
+            body: crate::antigravity::vendor::ANTIGRAVITY_THIRD_PARTY_MODELS
+                .iter()
+                .map(|m| format!("• {m}"))
+                .collect(),
+        });
     }
     // Figures read off the Cloud Code API while no product runs can lag what
     // a running product would show; say where they came from.
@@ -2078,6 +2146,7 @@ mod tests {
     fn openai_no_windows_renders_message() {
         let snap = OpenAiSnapshot {
             plan: "ChatGPT Plus".into(),
+            user_email: None,
             session: None,
             weekly: None,
             code_review: None,
@@ -2138,6 +2207,7 @@ mod tests {
     fn openai_with_credits_renders_block() {
         let snap = OpenAiSnapshot {
             plan: "ChatGPT Plus".into(),
+            user_email: None,
             session: Some(UsageWindow {
                 utilization_pct: 1,
                 resets_at: None,
@@ -2173,6 +2243,7 @@ mod tests {
     fn openai_weekly_only_omits_session_section() {
         let snap = OpenAiSnapshot {
             plan: "ChatGPT Prolite".into(),
+            user_email: None,
             session: None,
             weekly: Some(UsageWindow {
                 utilization_pct: 66,
@@ -2218,6 +2289,7 @@ mod tests {
         };
         let codex = OpenAiSnapshot {
             plan: "ChatGPT Plus".into(),
+            user_email: None,
             session: None,
             weekly: None,
             code_review: None,
@@ -2262,6 +2334,7 @@ mod tests {
     fn a_provider_with_no_banked_resets_shows_no_reset_row() {
         let snap = OpenAiSnapshot {
             plan: "ChatGPT Plus".into(),
+            user_email: None,
             session: None,
             weekly: None,
             code_review: None,
@@ -2640,6 +2713,7 @@ mod tests {
         VendorSnapshot::Antigravity(crate::usage::AntigravitySnapshot {
             plan: "Pro".into(),
             account: "acct:test".into(),
+            user_email: None,
             source,
             session: Some(UsageWindow {
                 utilization_pct: 43,
@@ -2757,5 +2831,46 @@ mod tests {
         assert_eq!(sections.len(), 2);
         assert_eq!(compact_cells(&bare), (String::new(), vec![]));
         assert_eq!(headline_pct(&bare), None);
+    }
+
+    #[test]
+    fn snapshot_tab_with_metrics_does_not_panic() {
+        use crate::account_store::{ReportEntry, ReportSection};
+        use crate::tui::app::SnapshotTab;
+
+        let snap = SnapshotTab {
+            entry: ReportEntry {
+                id: "antigravity".into(),
+                name: "antigravity".into(),
+                display_name: "Antigravity".into(),
+                short_name: "agy".into(),
+                icon: "agy".into(),
+                brand: Some("antigravity".into()),
+                plan: Some("Google AI Pro".into()),
+                error: None,
+                sections: vec![
+                    ReportSection::Spacer,
+                    ReportSection::Metric {
+                        label: "Gemini".into(),
+                        percent: 46,
+                        value: "46%".into(),
+                        detail: "Resets in 3h".into(),
+                        severity: "low".into(),
+                        reset_at: Some(Utc::now()),
+                        window_secs: Some(18000),
+                    },
+                ],
+                stale: false,
+                fetched_at: Some(Utc::now()),
+            },
+            saved_at: Utc::now(),
+            account_label: "test@example.com".into(),
+            user: Some("test@example.com".into()),
+        };
+
+        let sections = sections_with_metadata_for(&TabState::Snapshot(Box::new(snap)), now(), 5);
+        assert!(!sections.is_empty());
+        assert!(matches!(sections[0].section, Section::Title { .. }));
+        assert!(matches!(sections[2].section, Section::Metric { pct: 46, .. }));
     }
 }

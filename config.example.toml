@@ -21,6 +21,19 @@
 # Default sidebar (falls back to navbar on narrow terminals).
 # vendor_box = "sidebar"
 
+# Multi-provider accounts: group providers under a user identity and switch between them.
+# active_account = "personal"
+#
+# [[accounts]]
+# label = "personal"
+# user = "you@personal.dev"             # optional: inferred from provider credentials if omitted
+# providers = ["antigravity", "openai"]
+#
+# [[accounts]]
+# label = "work"
+# user = "you@work.corp"
+# providers = ["anthropic", "openrouter"]
+
 # Custom providers: any HTTP endpoint that answers a GET with a JSON document,
 # authenticated with a static token. One [[custom]] table per provider; each
 # gets a TUI tab and a `usage --json` entry (`custom:<id>`) next to the

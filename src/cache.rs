@@ -402,8 +402,9 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     tmp.as_file_mut()
         .sync_all()
         .map_err(|e| AppError::io_at(tmp.path(), e))?;
-    tmp.persist(path)
-        .map_err(|e| AppError::io_at(path, e.error))?;
+    if let Err(_) = tmp.persist(path) {
+        fs::write(path, bytes).map_err(|e| AppError::io_at(path, e))?;
+    }
     Ok(())
 }
 

@@ -185,6 +185,7 @@ struct Session {
     csrf: Option<String>,
     plan: String,
     account: String,
+    user_email: Option<String>,
 }
 
 /// Which source this fetch will draw on, decided before the cache is consulted
@@ -258,6 +259,7 @@ async fn open_session(client: &reqwest::Client, bases: Option<&[String]>) -> Res
                     csrf,
                     plan: plan_from_status(&v),
                     account: account_key(&v),
+                    user_email: user_status_email(&v),
                 });
             }
             Err(e) => errors.push(e),
@@ -362,6 +364,7 @@ async fn fetch_live(
     let quota = post_rpc(client, &session.base, session.csrf.as_deref(), QUOTA_RPC).await?;
     let mut snap = parse_quota_summary(&quota, session.plan)?;
     snap.account = session.account;
+    snap.user_email = session.user_email;
     Ok(snap)
 }
 
@@ -539,6 +542,13 @@ async fn fetch_remote(
     snap.account = remote_account(&token.fingerprint);
     snap.source = AntigravitySource::Remote;
     Ok(snap)
+}
+
+fn user_status_email(user_status: &serde_json::Value) -> Option<String> {
+    user_status["userStatus"]["email"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
 }
 
 /// Identity of the signed-in account, fingerprinted rather than stored in
@@ -737,6 +747,7 @@ pub fn parse_quota_summary(v: &serde_json::Value, plan: String) -> Result<Antigr
         // Stamped by the caller, which is what knows the session's identity
         // and which path it came through.
         account: String::new(),
+        user_email: None,
         source: AntigravitySource::Local,
         session: gemini_5h,
         weekly: gemini_weekly,
@@ -1397,6 +1408,7 @@ pub fn parse_cache_at(
     let snap = AntigravitySnapshot {
         plan: v["plan"].as_str().unwrap_or(DEFAULT_PLAN).to_string(),
         account: cached_account.unwrap_or_default().to_string(),
+        user_email: v["user_email"].as_str().map(|s| s.to_string()),
         // Payloads written before the remote path existed were all local.
         source: v["source"]
             .as_str()
@@ -1432,6 +1444,7 @@ pub fn snap_to_json(snap: &AntigravitySnapshot) -> serde_json::Value {
     serde_json::json!({
         "plan": snap.plan,
         "account": snap.account,
+        "user_email": snap.user_email,
         "source": snap.source.as_str(),
         "session_pct": snap.session.as_ref().map(|w| w.utilization_pct),
         "session_reset": snap.session.as_ref().and_then(|w| w.resets_at.map(|dt| dt.to_rfc3339())),

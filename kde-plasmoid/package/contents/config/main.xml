@@ -107,14 +107,64 @@
       <default>true</default>
     </entry>
 
+    <entry name="fontSize" type="Int">
+      <default>0</default>
+      <min>0</min>
+      <max>32</max>
+    </entry>
+
     <entry name="showPercent" type="Bool">
       <default>true</default>
+    </entry>
+
+    <entry name="showIcon" type="Bool">
+      <default>true</default>
+    </entry>
+
+    <entry name="showName" type="Bool">
+      <default>true</default>
+    </entry>
+
+    <entry name="showAllProviders" type="Bool">
+      <default>true</default>
+    </entry>
+
+    <entry name="showFullEmail" type="Bool">
+      <default>true</default>
+    </entry>
+
+    <entry name="showExtraModels" type="Bool">
+      <default>true</default>
+    </entry>
+
+    <entry name="notifyResets" type="Bool">
+      <default>true</default>
+    </entry>
+
+    <entry name="selectedExtraModels" type="StringList">
+      <default>Claude Sonnet 4.6 (Thinking),Claude Opus 4.6 (Thinking),GPT-OSS 120B (Medium)</default>
+    </entry>
+
+    <entry name="compactDisplayMode" type="Enum">
+      <choices>
+        <choice name="AllThree"/>
+        <choice name="IconOnly"/>
+        <choice name="IconAndPercent"/>
+        <choice name="IconAndBar"/>
+        <choice name="PercentOnly"/>
+        <choice name="PercentAndBar"/>
+      </choices>
+      <default>AllThree</default>
     </entry>
 
     <entry name="barWidth" type="Int">
       <default>8</default>
       <min>4</min>
       <max>20</max>
+    </entry>
+
+    <entry name="dismissedRenewals" type="StringList">
+      <default></default>
     </entry>
   </group>
 </kcfg>

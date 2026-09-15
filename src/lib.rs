@@ -10,6 +10,7 @@
 //! and hand off to a renderer in this crate.
 
 pub mod account;
+pub mod account_store;
 pub mod active;
 pub mod anthropic;
 pub mod anthropic_api;
@@ -38,6 +39,7 @@ pub mod kilo;
 pub mod kimi;
 pub mod kiro;
 pub mod minimax;
+pub mod monitor;
 pub mod moonshot;
 pub mod nous;
 pub mod novita;
@@ -49,6 +51,7 @@ pub mod outcome;
 pub mod pacing;
 pub mod pango;
 pub mod process;
+pub mod provider_cli;
 pub mod report;
 pub mod safe_storage;
 pub mod serde_helpers;

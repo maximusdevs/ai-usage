@@ -19,7 +19,15 @@ KCM.SimpleKCM {
     property alias cfg_useThemeColors: themeColorsCheck.checked
     property alias cfg_showBars: showBarsCheck.checked
     property alias cfg_barWidth: barWidthSpin.value
+    property alias cfg_fontSize: fontSizeSpin.value
     property alias cfg_showPercent: showPercentCheck.checked
+    property alias cfg_showIcon: showIconCheck.checked
+    property alias cfg_showName: showNameCheck.checked
+    property alias cfg_showAllProviders: showAllProvidersCheck.checked
+    property alias cfg_showFullEmail: showFullEmailCheck.checked
+    property alias cfg_showExtraModels: showExtraModelsCheck.checked
+    property alias cfg_notifyResets: notifyResetsCheck.checked
+    property var cfg_selectedExtraModels: ["Claude Sonnet 4.6 (Thinking)", "Claude Opus 4.6 (Thinking)", "GPT-OSS 120B (Medium)"]
     property alias cfg_colorLow: lowSwatch.hex
     property alias cfg_colorMid: midSwatch.hex
     property alias cfg_colorHigh: highSwatch.hex
@@ -29,14 +37,27 @@ KCM.SimpleKCM {
     // write-only from Plasma's side at load time, so the saved value never shows.
     property int cfg_leftClickAction: 0
     property int cfg_viewMode: 0
+    property int cfg_compactDisplayMode: 0
     property string cfg_vendor: ""
     property var cfg_vendorRing: []
+    property var cfg_dismissedRenewals: []
+
+    function hasExtraModel(modelName) {
+        return Array.from(page.cfg_selectedExtraModels || []).indexOf(modelName) !== -1;
+    }
+
+    function toggleExtraModel(modelName, on) {
+        const list = Array.from(page.cfg_selectedExtraModels || []).filter(m => m !== modelName);
+        if (on) list.push(modelName);
+        page.cfg_selectedExtraModels = list;
+    }
 
     // Which vendors exist and whether they currently work. Sourced from
     // `ai-usagebar usage --json`, which reports every entry enabled in
     // config.toml plus its plan or its error — so you can see that Codex has no
     // credentials *before* putting it in the scroll ring.
     property var vendorList: []
+    property var allProvidersList: []
     property bool probing: true
 
     Plasma5Support.DataSource {
@@ -51,9 +72,33 @@ KCM.SimpleKCM {
         }
     }
 
+    Plasma5Support.DataSource {
+        id: providerRunner
+        engine: "executable"
+        connectedSources: []
+        onNewData: (sourceName, data) => {
+            disconnectSource(sourceName);
+            const list = Logic.parseProviders(data["stdout"] || "");
+            if (list.length > 0)
+                page.allProvidersList = list;
+        }
+        function exec(cmd) {
+            if (connectedSources.indexOf(cmd) === -1)
+                connectSource(cmd);
+        }
+    }
+
+    function toggleProvider(id, enable) {
+        providerRunner.exec(Logic.buildProviderToggleCommand(page.cfg_binaryPath, id, enable));
+        // Re-probe after toggle
+        prober.connectSource(Logic.buildCommand(page.cfg_binaryPath, page.cfg_commandTimeout));
+        providerRunner.exec(Logic.buildProvidersListCommand(page.cfg_binaryPath));
+    }
+
     Component.onCompleted: {
         prober.connectSource(Logic.buildCommand(
             page.cfg_binaryPath, page.cfg_commandTimeout));
+        providerRunner.exec(Logic.buildProvidersListCommand(page.cfg_binaryPath));
     }
 
     // The report owns the canonical display name, so there is no second table
@@ -138,6 +183,7 @@ KCM.SimpleKCM {
             onActivated: page.cfg_vendor = model[currentIndex]
             delegate: QQC2.ItemDelegate {
                 required property var modelData
+                required property int index
                 width: currentVendorCombo.width
                 text: page.labelFor(modelData)
                 highlighted: currentVendorCombo.highlightedIndex === index
@@ -190,25 +236,219 @@ KCM.SimpleKCM {
 
         Item { Kirigami.FormData.isSection: true }
 
+        QQC2.Label {
+            Kirigami.FormData.label: i18n("Providers:")
+            text: i18n("Enable or disable providers installed on this system:")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+            textFormat: Text.PlainText
+        }
+
+        Repeater {
+            model: page.allProvidersList
+
+            delegate: RowLayout {
+                id: provChoice
+                required property var modelData
+                spacing: Kirigami.Units.smallSpacing
+
+                QQC2.CheckBox {
+                    text: provChoice.modelData.name || provChoice.modelData.id
+                    checked: provChoice.modelData.enabled
+                    onToggled: page.toggleProvider(provChoice.modelData.id, checked)
+                }
+
+                QQC2.Label {
+                    text: provChoice.modelData.configured ? i18n("✓ Configured") : i18n("Needs credentials")
+                    color: provChoice.modelData.configured ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.neutralTextColor
+                    font: Kirigami.Theme.smallFont
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: Kirigami.Units.gridUnit * 20
+                    textFormat: Text.PlainText
+                }
+            }
+        }
+
+        Item { Kirigami.FormData.isSection: true }
+
+        QQC2.CheckBox {
+            id: showAllProvidersCheck
+            Kirigami.FormData.label: i18n("Panel providers:")
+            text: i18n("Show all active providers side by side in panel")
+        }
+
+        QQC2.ComboBox {
+            id: compactDisplayModeCombo
+            Kirigami.FormData.label: i18n("Display mode:")
+            model: [
+                i18n("All (Icon + Name + % + Bar)"),
+                i18n("Icon only"),
+                i18n("Icon and Percentage"),
+                i18n("Icon and Progress Bar"),
+                i18n("Name and Percentage"),
+                i18n("Name only"),
+                i18n("Percentage only"),
+                i18n("Percentage and Progress Bar")
+            ]
+            currentIndex: page.cfg_compactDisplayMode
+            onActivated: {
+                page.cfg_compactDisplayMode = currentIndex;
+                if (currentIndex === 0) {
+                    showIconCheck.checked = true;
+                    showNameCheck.checked = true;
+                    showPercentCheck.checked = true;
+                    showBarsCheck.checked = true;
+                } else if (currentIndex === 1) {
+                    showIconCheck.checked = true;
+                    showNameCheck.checked = false;
+                    showPercentCheck.checked = false;
+                    showBarsCheck.checked = false;
+                } else if (currentIndex === 2) {
+                    showIconCheck.checked = true;
+                    showNameCheck.checked = false;
+                    showPercentCheck.checked = true;
+                    showBarsCheck.checked = false;
+                } else if (currentIndex === 3) {
+                    showIconCheck.checked = true;
+                    showNameCheck.checked = false;
+                    showPercentCheck.checked = false;
+                    showBarsCheck.checked = true;
+                } else if (currentIndex === 4) {
+                    showIconCheck.checked = false;
+                    showNameCheck.checked = true;
+                    showPercentCheck.checked = true;
+                    showBarsCheck.checked = false;
+                } else if (currentIndex === 5) {
+                    showIconCheck.checked = false;
+                    showNameCheck.checked = true;
+                    showPercentCheck.checked = false;
+                    showBarsCheck.checked = false;
+                } else if (currentIndex === 6) {
+                    showIconCheck.checked = false;
+                    showNameCheck.checked = false;
+                    showPercentCheck.checked = true;
+                    showBarsCheck.checked = false;
+                } else if (currentIndex === 7) {
+                    showIconCheck.checked = false;
+                    showNameCheck.checked = false;
+                    showPercentCheck.checked = true;
+                    showBarsCheck.checked = true;
+                }
+            }
+        }
+
+        QQC2.CheckBox {
+            id: showIconCheck
+            text: i18n("Show icon")
+        }
+
+        QQC2.CheckBox {
+            id: showNameCheck
+            text: i18n("Show provider/metric name")
+        }
+
         QQC2.CheckBox {
             id: showPercentCheck
-            Kirigami.FormData.label: i18n("Display:")
             text: i18n("Show percentage/value")
         }
 
         QQC2.CheckBox {
             id: showBarsCheck
-            text: i18n("Show bars (off = numbers only)")
+            text: i18n("Show progress bars in panel")
+        }
+
+        QQC2.SpinBox {
+            id: fontSizeSpin
+            Kirigami.FormData.label: i18n("Panel font size:")
+            from: 0
+            to: 32
+            stepSize: 1
+            textFromValue: function(value) {
+                return value === 0 ? i18n("System default") : value + " pt";
+            }
+            valueFromText: function(text) {
+                const n = parseInt(text, 10);
+                return isNaN(n) ? 0 : n;
+            }
+        }
+
+        QQC2.CheckBox {
+            id: showFullEmailCheck
+            Kirigami.FormData.label: i18n("Accounts:")
+            text: i18n("Show full email address (off = username only)")
+        }
+
+        QQC2.CheckBox {
+            id: showExtraModelsCheck
+            Kirigami.FormData.label: i18n("Extra models:")
+            text: i18n("Show extra models (Claude & GPT in Antigravity)")
+        }
+
+        Repeater {
+            model: showExtraModelsCheck.checked ? [
+                "Claude Sonnet 4.6 (Thinking)",
+                "Claude Opus 4.6 (Thinking)",
+                "GPT-OSS 120B (Medium)"
+            ] : []
+
+            delegate: RowLayout {
+                id: extraChoice
+                required property string modelData
+                spacing: Kirigami.Units.smallSpacing
+
+                QQC2.CheckBox {
+                    text: extraChoice.modelData
+                    checked: page.hasExtraModel(extraChoice.modelData)
+                    onToggled: page.toggleExtraModel(extraChoice.modelData, checked)
+                }
+
+                QQC2.Label {
+                    text: i18n("Shared quota pool")
+                    font: Kirigami.Theme.smallFont
+                    opacity: 0.6
+                    textFormat: Text.PlainText
+                }
+            }
+        }
+
+        RowLayout {
+            Kirigami.FormData.label: i18n("Notifications:")
+            spacing: Kirigami.Units.smallSpacing
+
+            QQC2.CheckBox {
+                id: notifyResetsCheck
+                text: i18n("Desktop notifications when account quotas reset")
+            }
+
+            QQC2.Button {
+                text: i18n("Test Notification")
+                icon.name: "preferences-system-notifications"
+                onClicked: {
+                    providerRunner.exec(Logic.buildMonitorTestCommand(page.cfg_binaryPath));
+                }
+            }
+
+            QQC2.Button {
+                text: i18n("Simulate Renewal Alert")
+                icon.name: "dialog-information"
+                onClicked: {
+                    providerRunner.exec(Logic.buildSimulateRenewalCommand(page.cfg_binaryPath));
+                }
+            }
         }
 
         QQC2.CheckBox {
             id: themeColorsCheck
+            Kirigami.FormData.label: i18n("Colors:")
             text: i18n("Follow the Plasma colour scheme")
         }
 
         QQC2.SpinBox {
             id: barWidthSpin
-            Kirigami.FormData.label: i18n("Width of each bar (cells):")
+            Kirigami.FormData.label: i18n("Width of each panel bar (cells):")
             from: 4
             to: 20
             enabled: showBarsCheck.checked

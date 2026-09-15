@@ -380,6 +380,17 @@ pub enum VendorSnapshot {
     Custom(crate::custom::types::CustomSnapshot),
 }
 
+impl VendorSnapshot {
+    pub fn user_email(&self) -> Option<&str> {
+        match self {
+            Self::Antigravity(s) => s.user_email.as_deref(),
+            Self::Openai(s) => s.user_email.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+
 /// Google Antigravity 2.0 / CLI snapshot. The API groups models into Gemini
 /// and third-party (Claude/GPT) buckets, and each group may carry a 5-hour and
 /// a weekly window — up to four, and not every product or plan offers all of
@@ -391,6 +402,8 @@ pub struct AntigravitySnapshot {
     /// Fingerprint of the signed-in account. Never displayed — it exists so a
     /// cache written for one Google account is not served for another.
     pub account: String,
+    /// Email of the signed-in user, when exposed by the local server or token.
+    pub user_email: Option<String>,
     /// Where the figures came from: a running local product, or the Cloud
     /// Code API reached with the saved Google session while nothing runs.
     pub source: AntigravitySource,
@@ -584,6 +597,8 @@ impl SuperGrokPeriod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAiSnapshot {
     pub plan: String,
+    /// Email of the signed-in user, when exposed by the session or token.
+    pub user_email: Option<String>,
     /// 5h window, identified by its duration rather than its wire position.
     pub session: Option<UsageWindow>,
     /// 7d window, identified by its duration rather than its wire position.

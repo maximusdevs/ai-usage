@@ -32,6 +32,7 @@ impl Registered {
 #[must_use]
 pub fn run(action: &AccountAction) -> i32 {
     match action {
+        AccountAction::List { json } => list(*json),
         AccountAction::Add {
             label,
             no_login,
@@ -93,6 +94,173 @@ fn config_for_mutation(loaded: Result<Config>) -> Result<Config> {
             "refusing to change account state because config.toml did not parse: {error}"
         ))
     })
+}
+
+/// Resolve the user/email identity associated with an account.
+/// Checks the explicit `account.user` first, then falls back to inferring
+/// from the configured providers (OpenAI auth.json, Anthropic marker, etc.).
+pub fn resolve_user_for_account(
+    config: &Config,
+    account: &crate::config::AccountConfig,
+) -> Option<String> {
+    if let Some(user) = &account.user {
+        let trimmed = user.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    // Infer from providers in this account:
+    let providers_to_check: Vec<String> = if account.providers.is_empty() {
+        vec!["openai".into(), "antigravity".into(), "anthropic".into()]
+    } else {
+        account.providers.clone()
+    };
+
+    for provider in &providers_to_check {
+        if let Some(email) = crate::account_store::detect_provider_email(provider, config) {
+            return Some(email);
+        }
+    }
+
+    // Also check saved snapshot for this account:
+    if let Some(snap) = crate::account_store::get_snapshot(&account.label)
+        && let Some(user) = snap.user
+    {
+        return Some(user);
+    }
+
+    None
+}
+
+pub fn list(json: bool) -> i32 {
+    let config = config_or_default();
+    let active_label = config.resolve_active_account(None);
+    let snapshots = crate::account_store::all_snapshots();
+
+    let mut account_rows = Vec::new();
+    for acct in &config.accounts {
+        let user = resolve_user_for_account(&config, acct);
+        let is_active = active_label.as_deref() == Some(&acct.label);
+        let effective_providers: Vec<String> = if !acct.providers.is_empty() {
+            acct.providers.clone()
+        } else {
+            let mut detected = Vec::new();
+            for provider_slug in ["antigravity", "openai", "anthropic"] {
+                if let Some(target_user) = user.as_deref()
+                    && crate::account_store::provider_matches_user(
+                        provider_slug,
+                        target_user,
+                        &config,
+                        &snapshots,
+                    )
+                {
+                    detected.push(provider_slug.to_string());
+                }
+            }
+            detected
+        };
+        account_rows.push(serde_json::json!({
+            "label": acct.label,
+            "user": user,
+            "providers": effective_providers,
+            "auto_detected": acct.providers.is_empty(),
+            "active": is_active,
+        }));
+    }
+
+    // Also include saved snapshot accounts not in config.accounts:
+    for snap in &snapshots {
+        if !config.accounts.iter().any(|a| {
+            crate::account_store::accounts_match_or_prefix(&a.label, &snap.account_label)
+                || (snap.user.is_some()
+                    && a.user
+                        .as_deref()
+                        .map(|u| {
+                            crate::account_store::accounts_match_or_prefix(
+                                u,
+                                snap.user.as_deref().unwrap(),
+                            )
+                        })
+                        .unwrap_or(false))
+        }) {
+            account_rows.push(serde_json::json!({
+                "label": snap.account_label,
+                "user": snap.user,
+                "providers": snap.providers,
+                "active": active_label.as_deref() == Some(&snap.account_label),
+                "snapshot_time": snap.saved_at.to_rfc3339(),
+            }));
+        }
+    }
+
+    if json {
+        let output = serde_json::json!({
+            "active_account": active_label,
+            "accounts": account_rows,
+        });
+        println!("{output}");
+        return 0;
+    }
+
+    if account_rows.is_empty() {
+        println!(
+            "No multi-provider accounts configured in {}.",
+            crate::config::config_path_hint()
+        );
+        println!(
+            "Add [[accounts]] to configure accounts with their user and providers, for example:"
+        );
+        println!();
+        println!("  [[accounts]]");
+        println!("  label = \"personal\"");
+        println!("  user = \"you@example.com\"");
+        println!("  providers = [\"antigravity\", \"openai\"]");
+        println!();
+        println!("Run `ai-usagebar account status` to see Claude CLI and Desktop accounts.");
+        return 0;
+    }
+
+    println!("Accounts:");
+    for row in &account_rows {
+        let label = row["label"].as_str().unwrap_or("?");
+        let user = row["user"]
+            .as_str()
+            .map(|u| format!(" ({u})"))
+            .unwrap_or_default();
+        let is_active = row["active"].as_bool().unwrap_or(false);
+        let is_snapshot = row["snapshot_time"].as_str().is_some();
+        let active_tag = if is_active {
+            "  [active]"
+        } else if is_snapshot {
+            "  [saved snapshot]"
+        } else {
+            ""
+        };
+        let bullet = if is_active { "*" } else { " " };
+        let auto_tag = if row["auto_detected"].as_bool().unwrap_or(false) {
+            " (auto-detected)"
+        } else {
+            ""
+        };
+        let providers = row["providers"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+
+        println!("  {bullet} {label}{user}{active_tag}");
+        if !providers.is_empty() {
+            println!("    Providers: {providers}{auto_tag}");
+        }
+        println!();
+    }
+
+    0
 }
 
 fn status(json: bool) -> i32 {
@@ -478,10 +646,32 @@ fn switch(args: &SwitchArgs) -> i32 {
         }
     }
 
+    // If this matches a configured multi-provider account, persist it as the active account.
+    if let Some(acct) = config.find_account(args.label) {
+        if !args.dry_run {
+            if let Err(error) = crate::active::write_account(&acct.label) {
+                eprintln!("ai-usagebar account switch: failed to persist active account: {error}");
+                failed = true;
+            } else {
+                if acted {
+                    println!();
+                }
+                println!("Active account set to '{}'.", acct.label);
+                acted = true;
+            }
+        } else {
+            if acted {
+                println!();
+            }
+            println!("Would set active account to '{}'.", acct.label);
+            acted = true;
+        }
+    }
+
     if !acted && !failed {
         eprintln!(
             "ai-usagebar account switch: nothing to do for {:?}. \
-             Run `ai-usagebar account status` to see the known accounts.",
+             Run `ai-usagebar account list` to see known accounts.",
             args.label
         );
         return 1;

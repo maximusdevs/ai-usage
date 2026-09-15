@@ -14,28 +14,27 @@ codebase.
 
 ## Features
 
-- Per-provider Waybar modules use the same JSON shape and flags as claudebar.
-- The native Omarchy Quattro plugin follows the shell theme and supports
-  keyboard navigation, provider switching, live reset timers, and stale/error
-  states.
-- `ai-usagebar-tui` opens with a compact provider overview and refreshes every
-  60 seconds. Its navigation can use a sidebar, navbar, or no vendor box.
-- An optional Claude Code context view reads recent local session usage without
-  scanning entire histories.
-- Native integrations are available for Omarchy, GNOME Shell, KDE Plasma 6,
-  the macOS menu bar, and a Windows system-tray popover.
-- One bar item can cycle through enabled providers. `[ui] primary` controls the
-  initial provider in both the widget and TUI.
-- Atomic caches and file locking prevent duplicate requests from multi-monitor
-  Waybar setups.
-- Network failures keep the previous data visible; HTTP errors appear in the
-  tooltip.
-- A vendor that answers HTTP 429 is left alone for five minutes: the last good
-  snapshot keeps showing, or the entry reads "rate limited; next attempt in 4m"
-  and no request is made until then (every vendor on the shared cache; Nous
-  Research has its own path).
-- `--pretty`, `--watch N`, and `make smoke` help with local testing and API
-  response changes.
+- **Multi-Provider & Multi-Account:** Tracks Claude, Codex/ChatGPT, Google Antigravity (Gemini Pro/Flash & Claude/GPT OSS extra models), GitHub Copilot, Z.AI, OpenRouter, DeepSeek, Kimi, Nous Research, OpenCode Go, and Command Code.
+- **Account Usage History Isolation:** Automatically detects active session identities per provider and protects inactive accounts from being overwritten. Inactive account quota countdowns recalculate dynamically without data loss.
+- **Background Quota Renewal Monitor & Desktop Alerts (`ai-usagebar monitor`):** Daemon that tracks 5-hour and weekly quota reset windows across accounts and fires native desktop notifications when quotas renew:
+  - **Linux / BSD:** Native desktop notifications via `notify-send`.
+  - **macOS:** Native Notification Center alerts via `osascript`.
+  - **Windows:** Native Windows 10/11 Action Center toasts via PowerShell WinRT `ToastNotificationManager`.
+  - Built-in simulation commands: `ai-usagebar monitor --simulate-renewal` and `--clear-renewals`.
+- **Advanced KDE Plasma 6 Widget:**
+  - Compact taskbar notification badge `🔔 [N]` indicating accounts ready for use.
+  - Interactive "Cotas Renovadas" alert card in the popup with click-to-dismiss.
+  - Configurable font scaling aligned with system panel theme (`Kirigami.Theme.defaultFont`).
+  - Independent progress bar toggles (hide in taskbar while keeping full bars in popup).
+  - Extra model visual linking (e.g. Claude & GPT OSS sub-models under Antigravity).
+  - Flexible provider labeling (icon only, name only, or both).
+- **Per-provider Waybar modules** use the same JSON shape and flags as claudebar.
+- **Native Omarchy Quattro plugin** follows the shell theme and supports keyboard navigation, provider switching, live reset timers, and stale/error states.
+- **`ai-usagebar-tui`** opens with a compact provider overview and refreshes every 60 seconds with sidebar or navbar navigation.
+- **Claude Code context view** reads recent local session usage without scanning entire histories.
+- **Cross-Platform Native Integrations:** Linux (Omarchy, Waybar, KDE Plasma 6, GNOME Shell), macOS (Menu Bar App), and Windows (System Tray Popover).
+- **Resilient & Atomic:** Atomic caches, flock-protected requests, rate-limit backoffs (HTTP 429 backoff for 5 minutes), and automatic offline fallback to last known snapshot.
+- `--pretty`, `--watch N`, and `make smoke` help with local testing and API response changes.
 
 ## Reference guides
 
@@ -600,6 +599,30 @@ window gives a frontend nothing to pace against. These fields are additive, so
 existing consumers remain compatible. `short_name` is the same three-letter
 code `{vendor_short}` prints, so a frontend that wants a compact provider tag
 takes it from the report instead of keeping its own table.
+
+## Background Quota Monitor & Renewal Alerts
+
+`ai-usagebar` includes a background daemon that monitors 5-hour and weekly quota resets across all tracked accounts and dispatches native desktop notifications when an account's quota renews:
+
+```bash
+# Start background monitor daemon (checks every 60s by default)
+ai-usagebar monitor
+
+# Custom check interval (e.g. every 30s)
+ai-usagebar monitor --interval 30
+
+# Simulate a renewal event to test desktop notifications and widget alerts
+ai-usagebar monitor --simulate-renewal
+
+# Clear simulated test renewal events
+ai-usagebar monitor --clear-renewals
+```
+
+### Multi-Account Isolation & Historical Snapshot Storage
+When multiple accounts are used across providers (e.g. personal and work Antigravity or Codex accounts):
+- The active login session is automatically detected per-provider (`detect_provider_email`).
+- Snapshots of inactive accounts are safely preserved without being overwritten by live sessions of newly logged-in accounts.
+- Inactive accounts dynamically update their remaining reset countdowns in `usage` and `usage --json` without data loss.
 
 ## Standalone TUI
 

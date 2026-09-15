@@ -150,27 +150,52 @@ pub const KEY_VENDORS: &[KeyVendor] = &[
     },
 ];
 
-/// Which control has keyboard focus. `Key(i)` indexes into [`KEY_VENDORS`].
+/// Per-provider toggle state in the settings dialog.
+#[derive(Debug, Clone)]
+pub struct ProviderToggle {
+    pub id: VendorId,
+    pub name: &'static str,
+    pub enabled: bool,
+    pub dirty: bool,
+}
+
+/// Which control has keyboard focus. `Provider(i)` indexes into [`VendorId::all()`]. `Key(i)` indexes into [`KEY_VENDORS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Primary,
+    ShowFullEmail,
+    ShowExtraModels,
+    NotifyResets,
+    Provider(usize),
     Key(usize),
     Save,
 }
 
 impl Focus {
     pub fn next(self) -> Self {
+        let num_providers = VendorId::all().len();
         match self {
-            Focus::Primary => Focus::Key(0),
+            Focus::Primary => Focus::ShowFullEmail,
+            Focus::ShowFullEmail => Focus::ShowExtraModels,
+            Focus::ShowExtraModels => Focus::NotifyResets,
+            Focus::NotifyResets => Focus::Provider(0),
+            Focus::Provider(i) if i + 1 < num_providers => Focus::Provider(i + 1),
+            Focus::Provider(_) => Focus::Key(0),
             Focus::Key(i) if i + 1 < KEY_VENDORS.len() => Focus::Key(i + 1),
             Focus::Key(_) => Focus::Save,
             Focus::Save => Focus::Primary,
         }
     }
     pub fn prev(self) -> Self {
+        let num_providers = VendorId::all().len();
         match self {
             Focus::Primary => Focus::Save,
-            Focus::Key(0) => Focus::Primary,
+            Focus::ShowFullEmail => Focus::Primary,
+            Focus::ShowExtraModels => Focus::ShowFullEmail,
+            Focus::NotifyResets => Focus::ShowExtraModels,
+            Focus::Provider(0) => Focus::NotifyResets,
+            Focus::Provider(i) => Focus::Provider(i - 1),
+            Focus::Key(0) => Focus::Provider(num_providers - 1),
             Focus::Key(i) => Focus::Key(i - 1),
             Focus::Save => Focus::Key(KEY_VENDORS.len() - 1),
         }
@@ -279,8 +304,16 @@ pub struct SettingsState {
     /// cannot actually be used by the widget or TUI.
     pub primary_choices: Vec<VendorId>,
     pub primary: VendorId,
+    /// Toggleable AI providers (all supported vendors).
+    pub providers: Vec<ProviderToggle>,
     /// One input per [`KEY_VENDORS`] entry, same order.
     pub keys: Vec<KeyInput>,
+    /// Whether to display full email addresses.
+    pub show_full_email: Option<bool>,
+    /// Whether to display extra model info in Antigravity.
+    pub show_extra_models: Option<bool>,
+    /// Whether to notify on desktop when account quotas reset.
+    pub notify_resets: Option<bool>,
     /// One-line status displayed in the footer ("saved …", "save failed …").
     pub status: String,
 }
@@ -301,6 +334,15 @@ impl SettingsState {
     /// environment would fail the install for anyone who exports, say,
     /// `OLLAMA_API_KEY`. Tests pass their own lookup here.
     pub fn from_config_with(cfg: &Config, env_set: impl Fn(&str) -> bool) -> Self {
+        let providers: Vec<ProviderToggle> = VendorId::all()
+            .iter()
+            .map(|id| ProviderToggle {
+                id: *id,
+                name: id.display_name(),
+                enabled: cfg.is_enabled(*id),
+                dirty: false,
+            })
+            .collect();
         let keys = KEY_VENDORS
             .iter()
             .map(|kv| KeyInput::from_config(cfg.inline_api_key(kv.id)))
@@ -345,9 +387,22 @@ impl SettingsState {
             focus: Focus::Primary,
             primary_choices,
             primary,
+            providers,
             keys,
+            show_full_email: Some(cfg.ui.show_full_email()),
+            show_extra_models: Some(cfg.ui.show_extra_models()),
+            notify_resets: Some(cfg.ui.notify_resets()),
             status: String::new(),
         }
+    }
+
+    /// Whether the provider with `id` is currently enabled in settings.
+    pub fn is_provider_enabled(&self, id: VendorId) -> bool {
+        self.providers
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| p.enabled)
+            .unwrap_or(false)
     }
 
     /// The focused key input, if a key row is focused.
@@ -407,11 +462,35 @@ pub fn handle_key(state: &mut SettingsState, code: KeyCode, mods: KeyModifiers) 
         return Action::Continue;
     }
     match code {
-        KeyCode::Tab | KeyCode::Down => {
+        KeyCode::Tab => {
+            state.focus = match state.focus {
+                Focus::Primary => Focus::ShowFullEmail,
+                Focus::ShowFullEmail | Focus::ShowExtraModels | Focus::NotifyResets => {
+                    Focus::Provider(0)
+                }
+                Focus::Provider(_) => Focus::Key(0),
+                Focus::Key(_) => Focus::Save,
+                Focus::Save => Focus::Primary,
+            };
+            return Action::Continue;
+        }
+        KeyCode::BackTab => {
+            state.focus = match state.focus {
+                Focus::Primary => Focus::Save,
+                Focus::ShowFullEmail | Focus::ShowExtraModels | Focus::NotifyResets => {
+                    Focus::Primary
+                }
+                Focus::Provider(_) => Focus::ShowFullEmail,
+                Focus::Key(_) => Focus::Provider(0),
+                Focus::Save => Focus::Key(0),
+            };
+            return Action::Continue;
+        }
+        KeyCode::Down => {
             state.focus = state.focus.next();
             return Action::Continue;
         }
-        KeyCode::BackTab | KeyCode::Up => {
+        KeyCode::Up => {
             state.focus = state.focus.prev();
             return Action::Continue;
         }
@@ -437,6 +516,22 @@ pub fn handle_key(state: &mut SettingsState, code: KeyCode, mods: KeyModifiers) 
     // Field-specific handling.
     match state.focus {
         Focus::Primary => handle_primary(state, code),
+        Focus::ShowFullEmail => {
+            if matches!(code, KeyCode::Char(' ') | KeyCode::Enter) {
+                state.show_full_email = Some(!state.show_full_email.unwrap_or(true));
+            }
+        }
+        Focus::ShowExtraModels => {
+            if matches!(code, KeyCode::Char(' ') | KeyCode::Enter) {
+                state.show_extra_models = Some(!state.show_extra_models.unwrap_or(false));
+            }
+        }
+        Focus::NotifyResets => {
+            if matches!(code, KeyCode::Char(' ') | KeyCode::Enter) {
+                state.notify_resets = Some(!state.notify_resets.unwrap_or(true));
+            }
+        }
+        Focus::Provider(i) => handle_provider(state, i, code),
         Focus::Key(i) => {
             if let Some(input) = state.keys.get_mut(i) {
                 handle_input(input, code);
@@ -449,6 +544,44 @@ pub fn handle_key(state: &mut SettingsState, code: KeyCode, mods: KeyModifiers) 
         }
     }
     Action::Continue
+}
+
+fn handle_provider(state: &mut SettingsState, i: usize, code: KeyCode) {
+    const ROWS: usize = 7;
+    let n = state.providers.len();
+    match code {
+        KeyCode::Left => {
+            if i >= ROWS {
+                state.focus = Focus::Provider(i - ROWS);
+            }
+        }
+        KeyCode::Right => {
+            if i + ROWS < n {
+                state.focus = Focus::Provider(i + ROWS);
+            }
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            if let Some(p) = state.providers.get_mut(i) {
+                p.enabled = !p.enabled;
+                p.dirty = true;
+                let id = p.id;
+                let enabled = p.enabled;
+                if enabled {
+                    if !state.primary_choices.contains(&id) {
+                        state.primary_choices.push(id);
+                    }
+                } else if state.primary == id
+                    && let Some(other) =
+                        state.primary_choices.iter().copied().find(|other_id| {
+                            *other_id != id && state.is_provider_enabled(*other_id)
+                        })
+                {
+                    state.primary = other;
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn try_save(state: &mut SettingsState) -> Action {
@@ -532,6 +665,22 @@ pub fn save_to_path(state: &SettingsState, path: &Path) -> Result<()> {
         if state.primary == VendorId::Copilot || KEY_VENDORS.iter().any(|kv| kv.id == state.primary)
         {
             set_bool(&mut doc, state.primary.config_section(), "enabled", true)?;
+        }
+    }
+
+    if let Some(sfe) = state.show_full_email {
+        set_bool(&mut doc, "ui", "show_full_email", sfe)?;
+    }
+    if let Some(sem) = state.show_extra_models {
+        set_bool(&mut doc, "ui", "show_extra_models", sem)?;
+    }
+    if let Some(nr) = state.notify_resets {
+        set_bool(&mut doc, "ui", "notify_resets", nr)?;
+    }
+
+    for p in &state.providers {
+        if p.dirty {
+            set_bool(&mut doc, p.id.config_section(), "enabled", p.enabled)?;
         }
     }
 
@@ -841,17 +990,105 @@ pub fn render(f: &mut Frame, area: Rect, state: &SettingsState, theme: &Theme) {
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(inner);
 
-    // — Primary vendor + credentials header —
+    // — Primary vendor + providers + credentials header —
     let mut lines: Vec<Line> = vec![
         section_header("Primary vendor", "shown first on the bar / TUI", &bubble),
         primary_line(state, &bubble),
         Line::from(""),
-        section_header(
-            "Credentials",
-            "pick a row, type the credential, then Ctrl-S — Claude & Codex use CLI login",
-            &bubble,
-        ),
+        section_header("Display options", "Space/Enter to toggle", &bubble),
     ];
+
+    let email_focused = state.focus == Focus::ShowFullEmail;
+    let sfe = state.show_full_email.unwrap_or(true);
+    let sfe_mark = if email_focused { "▸ " } else { "  " };
+    let sfe_check = if sfe { "[x] " } else { "[ ] " };
+    lines.push(Line::from(vec![
+        bubble.span("  "),
+        Span::styled(sfe_mark, if email_focused { bubble.accent.add_modifier(Modifier::BOLD) } else { bubble.muted }),
+        Span::styled(sfe_check, if sfe { bubble.accent.add_modifier(Modifier::BOLD) } else { bubble.muted }),
+        Span::styled(
+            "Show full email (user@domain.com vs username)",
+            if email_focused { bubble.selected.add_modifier(Modifier::REVERSED | Modifier::BOLD) } else { bubble.title },
+        ),
+    ]));
+
+    let extra_focused = state.focus == Focus::ShowExtraModels;
+    let sem = state.show_extra_models.unwrap_or(false);
+    let sem_mark = if extra_focused { "▸ " } else { "  " };
+    let sem_check = if sem { "[x] " } else { "[ ] " };
+    lines.push(Line::from(vec![
+        bubble.span("  "),
+        Span::styled(sem_mark, if extra_focused { bubble.accent.add_modifier(Modifier::BOLD) } else { bubble.muted }),
+        Span::styled(sem_check, if sem { bubble.accent.add_modifier(Modifier::BOLD) } else { bubble.muted }),
+        Span::styled(
+            "Show extra models (Claude & GPT in Antigravity)",
+            if extra_focused { bubble.selected.add_modifier(Modifier::REVERSED | Modifier::BOLD) } else { bubble.title },
+        ),
+    ]));
+
+    let notif_focused = state.focus == Focus::NotifyResets;
+    let nr = state.notify_resets.unwrap_or(true);
+    let nr_mark = if notif_focused { "▸ " } else { "  " };
+    let nr_check = if nr { "[x] " } else { "[ ] " };
+    lines.push(Line::from(vec![
+        bubble.span("  "),
+        Span::styled(nr_mark, if notif_focused { bubble.accent.add_modifier(Modifier::BOLD) } else { bubble.muted }),
+        Span::styled(nr_check, if nr { bubble.accent.add_modifier(Modifier::BOLD) } else { bubble.muted }),
+        Span::styled(
+            "Notify on desktop when account quotas reset",
+            if notif_focused { bubble.selected.add_modifier(Modifier::REVERSED | Modifier::BOLD) } else { bubble.title },
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(section_header("Providers", "Space/Enter to toggle on/off", &bubble));
+
+    const ROWS: usize = 7;
+    const COLS: usize = 3;
+    for row in 0..ROWS {
+        let mut spans = vec![bubble.span("  ")];
+        for col in 0..COLS {
+            let idx = col * ROWS + row;
+            if let Some(p) = state.providers.get(idx) {
+                let is_focused = state.focus == Focus::Provider(idx);
+                let mark = if is_focused { "▸ " } else { "  " };
+                let mark_style = if is_focused {
+                    bubble.accent.add_modifier(Modifier::BOLD)
+                } else {
+                    bubble.muted
+                };
+                spans.push(Span::styled(mark, mark_style));
+
+                let check = if p.enabled { "[x] " } else { "[ ] " };
+                let check_style = if p.enabled {
+                    bubble.accent.add_modifier(Modifier::BOLD)
+                } else {
+                    bubble.muted
+                };
+                spans.push(Span::styled(check, check_style));
+
+                let label = format!("{:<14}", p.name);
+                let label_style = if is_focused {
+                    bubble
+                        .selected
+                        .add_modifier(Modifier::REVERSED | Modifier::BOLD)
+                } else if p.enabled {
+                    bubble.title
+                } else {
+                    bubble.muted
+                };
+                spans.push(Span::styled(label, label_style));
+                spans.push(bubble.span(" "));
+            }
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::from(""));
+
+    lines.push(section_header(
+        "Credentials",
+        "pick a row, type the credential, then Ctrl-S — Claude & Codex use CLI login",
+        &bubble,
+    ));
     for (i, kv) in KEY_VENDORS.iter().enumerate() {
         let focused = state.focus == Focus::Key(i);
         lines.push(key_row(kv, &state.keys[i], focused, &bubble));
@@ -859,10 +1096,11 @@ pub fn render(f: &mut Frame, area: Rect, state: &SettingsState, theme: &Theme) {
     lines.push(Line::from(""));
 
     // — Save + status —
+    let save_idx = lines.len();
     lines.push(save_line(state.focus == Focus::Save, &bubble));
     if !state.status.is_empty() {
-        let ok = state.status.starts_with("saved");
-        let mark = if ok { "  ✓ " } else { "  ✗ " };
+        let ok = !state.status.starts_with("save failed");
+        let mark = if ok { "✓ " } else { "✗ " };
         let style = if ok { bubble.accent } else { bubble.selected };
         lines.push(Line::from(vec![
             Span::styled(mark, style.add_modifier(Modifier::BOLD)),
@@ -870,26 +1108,62 @@ pub fn render(f: &mut Frame, area: Rect, state: &SettingsState, theme: &Theme) {
         ]));
     }
 
-    f.render_widget(Paragraph::new(lines), chunks[0]);
+    let target_line = match state.focus {
+        Focus::Primary => 1,
+        Focus::ShowFullEmail => 3,
+        Focus::ShowExtraModels => 4,
+        Focus::NotifyResets => 5,
+        Focus::Provider(i) => 8 + (i % ROWS),
+        Focus::Key(i) => 17 + i,
+        Focus::Save => save_idx,
+    };
+    let visible = chunks[0].height as usize;
+    let max_scroll = lines.len().saturating_sub(visible);
+    let scroll = if visible >= lines.len() || target_line < 5 {
+        0
+    } else {
+        target_line.saturating_sub(visible / 2).min(max_scroll)
+    };
+
+    f.render_widget(Paragraph::new(lines).scroll((scroll as u16, 0)), chunks[0]);
 
     // Context-aware hint footer.
     let hint = match state.focus {
         Focus::Primary => bubble.help_line([
-            ("↑↓/tab", "move"),
+            ("↑↓", "move"),
             ("←→", "change vendor"),
+            ("tab", "next section"),
+            ("^S", "save"),
+            ("esc", "close"),
+        ]),
+        Focus::ShowFullEmail | Focus::ShowExtraModels | Focus::NotifyResets => bubble.help_line([
+            ("↑↓", "move"),
+            ("space", "toggle"),
+            ("tab", "next section"),
+            ("^S", "save"),
+            ("esc", "close"),
+        ]),
+        Focus::Provider(_) => bubble.help_line([
+            ("↑↓←→", "select"),
+            ("space", "toggle"),
+            ("tab", "next section"),
             ("^S", "save"),
             ("esc", "close"),
         ]),
         Focus::Key(_) => bubble.help_line([
-            ("↑↓/tab", "move"),
+            ("↑↓", "move"),
             ("type", "edit key"),
             ("^V", "reveal"),
+            ("tab", "next section"),
             ("^S", "save"),
             ("esc", "close"),
         ]),
-        Focus::Save => {
-            bubble.help_line([("↑↓/tab", "move"), ("enter/^S", "save"), ("esc", "close")])
-        }
+        Focus::Save => bubble.help_line([
+            ("↑↓", "move"),
+            ("tab", "next section"),
+            ("enter/^S", "save"),
+            ("esc", "close"),
+        ]),
     };
     f.render_widget(Paragraph::new(hint), chunks[1]);
 }
@@ -1042,7 +1316,19 @@ mod tests {
             focus: Focus::Primary,
             primary_choices: VendorId::all().to_vec(),
             primary,
+            providers: VendorId::all()
+                .iter()
+                .map(|id| ProviderToggle {
+                    id: *id,
+                    name: id.display_name(),
+                    enabled: *id == primary,
+                    dirty: false,
+                })
+                .collect(),
             keys: KEY_VENDORS.iter().map(|_| KeyInput::default()).collect(),
+            show_full_email: Some(true),
+            show_extra_models: Some(false),
+            notify_resets: Some(true),
             status: String::new(),
         }
     }
@@ -1061,14 +1347,20 @@ mod tests {
     fn focus_cycles_through_primary_all_keys_and_save() {
         let mut f = Focus::Primary;
         let mut seen = vec![f];
-        // Full cycle = Primary + N key rows + Save.
-        for _ in 0..(KEY_VENDORS.len() + 2) {
+        let num_providers = VendorId::all().len();
+        // Full cycle = Primary + ShowFullEmail + ShowExtraModels + NotifyResets + N providers + M key rows + Save.
+        for _ in 0..(num_providers + KEY_VENDORS.len() + 5) {
             f = f.next();
             seen.push(f);
         }
-        // Primary, Key(0..n), Save, back to Primary.
+        // Primary, ShowFullEmail, ShowExtraModels, NotifyResets, Provider(0..n), Key(0..m), Save, back to Primary.
         assert_eq!(seen.first(), Some(&Focus::Primary));
         assert_eq!(seen.last(), Some(&Focus::Primary));
+        assert!(seen.contains(&Focus::ShowFullEmail));
+        assert!(seen.contains(&Focus::ShowExtraModels));
+        assert!(seen.contains(&Focus::NotifyResets));
+        assert!(seen.contains(&Focus::Provider(0)));
+        assert!(seen.contains(&Focus::Provider(num_providers - 1)));
         assert!(seen.contains(&Focus::Key(0)));
         assert!(seen.contains(&Focus::Key(KEY_VENDORS.len() - 1)));
         assert!(seen.contains(&Focus::Save));
@@ -1287,6 +1579,34 @@ api_key_env = "OPENROUTER_WORK_API_KEY"
     }
 
     #[test]
+    fn test_provider_toggle_and_save() {
+        let (_dir, path) = temp_config(Some(
+            r#"
+[antigravity]
+enabled = false
+
+[deepseek]
+enabled = false
+"#,
+        ));
+        let mut state = blank_state(VendorId::Anthropic);
+        let agy_idx = state
+            .providers
+            .iter()
+            .position(|p| p.id == VendorId::Antigravity)
+            .unwrap();
+        state.focus = Focus::Provider(agy_idx);
+        handle_key(&mut state, KeyCode::Char(' '), KeyModifiers::empty());
+        assert!(state.providers[agy_idx].enabled);
+        assert!(state.providers[agy_idx].dirty);
+
+        save_to_path(&state, &path).unwrap();
+
+        let cfg = Config::load_from(&path).unwrap();
+        assert!(cfg.is_enabled(VendorId::Antigravity));
+    }
+
+    #[test]
     fn save_refuses_to_replace_an_unreadable_existing_config() {
         let (_dir, path) = temp_config(None);
         let original = [0xff, 0xfe, 0xfd];
@@ -1322,13 +1642,33 @@ api_key_env = "OPENROUTER_WORK_API_KEY"
     }
 
     #[test]
-    fn tab_cycles_focus_from_primary_to_first_key() {
+    fn tab_cycles_focus_through_sections() {
         let mut s = blank_state(VendorId::Anthropic);
         assert_eq!(
             handle_key(&mut s, KeyCode::Tab, KeyModifiers::NONE),
             Action::Continue
         );
+        assert_eq!(s.focus, Focus::ShowFullEmail);
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Tab, KeyModifiers::NONE),
+            Action::Continue
+        );
+        assert_eq!(s.focus, Focus::Provider(0));
+        assert_eq!(
+            handle_key(&mut s, KeyCode::Tab, KeyModifiers::NONE),
+            Action::Continue
+        );
         assert_eq!(s.focus, Focus::Key(0));
+        assert_eq!(
+            handle_key(&mut s, KeyCode::BackTab, KeyModifiers::NONE),
+            Action::Continue
+        );
+        assert_eq!(s.focus, Focus::Provider(0));
+        assert_eq!(
+            handle_key(&mut s, KeyCode::BackTab, KeyModifiers::NONE),
+            Action::Continue
+        );
+        assert_eq!(s.focus, Focus::ShowFullEmail);
         assert_eq!(
             handle_key(&mut s, KeyCode::BackTab, KeyModifiers::NONE),
             Action::Continue

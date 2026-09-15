@@ -273,6 +273,14 @@ fn checked_reset_title(value: Option<String>) -> Option<String> {
 
 impl UsageResponse {
     pub fn into_snapshot(self, plan_hint: Option<&str>) -> AppResult<OpenAiSnapshot> {
+        self.into_snapshot_with_email(plan_hint, None)
+    }
+
+    pub fn into_snapshot_with_email(
+        self,
+        plan_hint: Option<&str>,
+        user_email: Option<String>,
+    ) -> AppResult<OpenAiSnapshot> {
         let plan_type = self.plan_type.as_deref().or(plan_hint).unwrap_or("Unknown");
         let plan = format!("ChatGPT {}", crate::format::capitalize(plan_type));
 
@@ -324,6 +332,7 @@ impl UsageResponse {
 
         Ok(OpenAiSnapshot {
             plan,
+            user_email,
             session,
             weekly,
             code_review,

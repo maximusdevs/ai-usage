@@ -51,11 +51,12 @@ pub async fn fetch_snapshot(
 
     let mut auth = creds::read_from(creds_path)?;
     let plan_hint = auth.tokens.plan_type_from_id_token();
+    let email = auth.tokens.email_from_id_token();
 
     // Corrupt fresh cache falls through to a live fetch rather than returning
-    // an all-zero snapshot.
+    // an all-zero snapshot. Cache from a different account is also rejected.
     if let Some(bytes) = cache.fresh_payload(cache_ttl)?
-        && let Ok(outcome) = reuse(bytes, cache, false, plan_hint.as_deref())
+        && let Ok(outcome) = reuse(bytes, cache, false, plan_hint.as_deref(), email.as_deref())
     {
         return Ok(outcome);
     }
@@ -125,13 +126,18 @@ pub async fn fetch_snapshot(
     .await
     {
         Ok(Ok(response)) => {
-            // Cache what we parse, not what arrived. The raw body carries the
-            // account's `user_id`, `account_id` and `email`, none of which any
-            // renderer reads — writing the parsed response is an allowlist by
-            // construction, so a field OpenAI adds later cannot quietly start
-            // living on disk. Same rule Command Code follows.
-            cache.write_payload(&serde_json::to_vec(&response)?)?;
-            let snap = response.into_snapshot(plan_hint.as_deref())?;
+            // Cache what we parse, plus user_email for cache isolation between accounts.
+            let mut cached_val = serde_json::to_value(&response)?;
+            if let Some(em) = &email
+                && let Some(obj) = cached_val.as_object_mut()
+            {
+                obj.insert(
+                    "user_email".to_string(),
+                    serde_json::Value::String(em.clone()),
+                );
+            }
+            cache.write_payload(&serde_json::to_vec(&cached_val)?)?;
+            let snap = response.into_snapshot_with_email(plan_hint.as_deref(), email)?;
             Ok(crate::outcome::Outcome::fresh(snap))
         }
         Ok(Err(AppError::Http { status, body })) => {
@@ -163,8 +169,18 @@ fn reuse(
     cache: &Cache,
     stale: bool,
     plan_hint: Option<&str>,
+    email: Option<&str>,
 ) -> Result<FetchOutcome> {
-    let snap = parse_payload(&bytes, plan_hint)?;
+    if let Some(expected_email) = email
+        && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(cached_email) = v.get("user_email").and_then(|e| e.as_str())
+        && !cached_email.eq_ignore_ascii_case(expected_email)
+    {
+        return Err(AppError::Schema(
+            "openai cache belongs to a different account; refetching".into(),
+        ));
+    }
+    let snap = parse_payload_with_email(&bytes, plan_hint, email)?;
     Ok(crate::outcome::Outcome::cached(snap, cache, stale))
 }
 
@@ -208,7 +224,24 @@ fn handle_auth_failure(
 }
 
 fn parse_payload(bytes: &[u8], plan_hint: Option<&str>) -> Result<OpenAiSnapshot> {
-    parse_response(bytes)?.into_snapshot(plan_hint)
+    parse_payload_with_email(bytes, plan_hint, None)
+}
+
+fn parse_payload_with_email(
+    bytes: &[u8],
+    plan_hint: Option<&str>,
+    email: Option<&str>,
+) -> Result<OpenAiSnapshot> {
+    let cached_email = email.map(str::to_string).or_else(|| {
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|v| {
+                v.get("user_email")
+                    .and_then(|e| e.as_str())
+                    .map(str::to_string)
+            })
+    });
+    parse_response(bytes)?.into_snapshot_with_email(plan_hint, cached_email)
 }
 
 /// The wire response, before it becomes a snapshot. Split out so the live path
@@ -680,5 +713,30 @@ mod tests {
         assert!(out.stale);
         assert_eq!(out.snapshot.session.as_ref().unwrap().utilization_pct, 50);
         assert_eq!(out.last_error.as_ref().map(|(c, _)| *c), Some(500));
+    }
+
+    #[test]
+    fn cache_from_another_account_is_rejected_on_switch() {
+        let (_td, cache) = cache_fixture();
+        let payload = br#"{"plan_type":"pro","user_email":"user1@example.com","rate_limit":{"primary_window":{"used_percent":50,"limit_window_seconds":18000}}}"#;
+        // Same email succeeds:
+        let res = reuse(
+            payload.to_vec(),
+            &cache,
+            false,
+            None,
+            Some("user1@example.com"),
+        );
+        assert!(res.is_ok());
+
+        // Different email is rejected:
+        let res = reuse(
+            payload.to_vec(),
+            &cache,
+            false,
+            None,
+            Some("user2@example.com"),
+        );
+        assert!(res.is_err());
     }
 }

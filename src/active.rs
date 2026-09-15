@@ -29,6 +29,10 @@ fn state_path() -> Result<PathBuf> {
     Ok(state_dir()?.join("active_vendor"))
 }
 
+fn account_state_path() -> Result<PathBuf> {
+    Ok(state_dir()?.join("active_account"))
+}
+
 /// Read the persisted active vendor, if any. `None` means "no override —
 /// callers fall back to [ui] primary or anthropic".
 pub fn read() -> Option<VendorId> {
@@ -43,6 +47,22 @@ pub fn read_from(path: &Path) -> Option<VendorId> {
     parse_slug(raw.trim())
 }
 
+/// Read the persisted active account label, if any.
+pub fn read_account() -> Option<String> {
+    read_account_from(&account_state_path().ok()?)
+}
+
+/// Read the persisted active account label from an explicit path.
+pub fn read_account_from(path: &Path) -> Option<String> {
+    let raw = fs::read_to_string(path).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Persist `vendor` as the active one. Atomic.
 pub fn write(vendor: VendorId) -> Result<()> {
     write_to(&state_path()?, vendor)
@@ -52,6 +72,44 @@ pub fn write(vendor: VendorId) -> Result<()> {
 /// to [`write`] (mirrors [`crate::cache::Cache::at`] vs `for_vendor`).
 pub fn write_to(path: &Path, vendor: VendorId) -> Result<()> {
     atomic_write(path, vendor.slug().as_bytes())
+}
+
+/// Persist active account `label`. Atomic.
+pub fn write_account(label: &str) -> Result<()> {
+    write_account_to(&account_state_path()?, label)
+}
+
+/// Persist active account `label` to an explicit path. Atomic.
+pub fn write_account_to(path: &Path, label: &str) -> Result<()> {
+    atomic_write(path, label.trim().as_bytes())
+}
+
+/// Cycle through configured accounts in `cfg.accounts` by delta positions.
+/// If active account is set, find its index, move by delta, write to state file,
+/// and return the new active account label.
+pub fn cycle_account(cfg: &crate::config::Config, delta: i32) -> Option<String> {
+    cycle_account_at(&account_state_path().ok()?, cfg, delta)
+}
+
+/// Test-friendly variant of [`cycle_account`] taking an explicit path.
+pub fn cycle_account_at(path: &Path, cfg: &crate::config::Config, delta: i32) -> Option<String> {
+    if cfg.accounts.is_empty() {
+        return None;
+    }
+    let current = read_account_from(path).or_else(|| cfg.active_account.clone());
+    let labels: Vec<&str> = cfg.accounts.iter().map(|a| a.label.as_str()).collect();
+    let current_idx = current
+        .as_deref()
+        .and_then(|c| {
+            labels
+                .iter()
+                .position(|l| crate::account_store::accounts_match_or_prefix(l, c))
+        })
+        .unwrap_or(0);
+    let next_idx = (current_idx as i32 + delta).rem_euclid(labels.len() as i32) as usize;
+    let next_label = labels[next_idx];
+    let _ = write_account_to(path, next_label);
+    Some(next_label.to_string())
 }
 
 /// Cycle the active vendor by `delta` positions through `enabled` (which
@@ -249,5 +307,83 @@ mod tests {
         let path = td.path().join("active_vendor");
         let res = cycle_at(&path, &[], VendorId::Anthropic, 1);
         assert!(matches!(res, Err(AppError::Other(_))));
+    }
+
+    #[test]
+    fn read_and_write_account_round_trips() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("active_account");
+        assert!(read_account_from(&path).is_none());
+
+        write_account_to(&path, "personal").unwrap();
+        assert_eq!(read_account_from(&path).as_deref(), Some("personal"));
+
+        write_account_to(&path, "  work  ").unwrap();
+        assert_eq!(read_account_from(&path).as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn cycle_account_at_cycles_through_accounts() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("active_account");
+
+        let toml_str = r#"
+[[accounts]]
+label = "personal"
+
+[[accounts]]
+label = "work"
+
+[[accounts]]
+label = "corp"
+"#;
+        let cfg: crate::config::Config = toml::from_str(toml_str).unwrap();
+
+        // 1. Initial cycle without prior state starts at personal (idx 0), +1 -> work (idx 1)
+        let next = cycle_account_at(&path, &cfg, 1);
+        assert_eq!(next.as_deref(), Some("work"));
+        assert_eq!(read_account_from(&path).as_deref(), Some("work"));
+
+        // 2. Next step -> corp (idx 2)
+        let next = cycle_account_at(&path, &cfg, 1);
+        assert_eq!(next.as_deref(), Some("corp"));
+
+        // 3. Next step wraps -> personal (idx 0)
+        let next = cycle_account_at(&path, &cfg, 1);
+        assert_eq!(next.as_deref(), Some("personal"));
+
+        // 4. Backward step wraps -> corp (idx 2)
+        let next = cycle_account_at(&path, &cfg, -1);
+        assert_eq!(next.as_deref(), Some("corp"));
+    }
+
+    #[test]
+    fn cycle_account_at_matches_prefix_labels() {
+        let td = TempDir::new().unwrap();
+        let path = td.path().join("active_account");
+
+        let toml_str = r#"
+[[accounts]]
+label = "maximusdev58@gmail.com"
+
+[[accounts]]
+label = "s2.luan2009@gmail.com"
+"#;
+        let cfg: crate::config::Config = toml::from_str(toml_str).unwrap();
+
+        // Write legacy prefix without domain to active_account file
+        write_account_to(&path, "s2.luan2009").unwrap();
+
+        // Cycling forward from s2.luan2009 should recognize it is at index 1, so +1 -> wraps to maximusdev58@gmail.com (index 0)
+        let next = cycle_account_at(&path, &cfg, 1);
+        assert_eq!(next.as_deref(), Some("maximusdev58@gmail.com"));
+
+        // Cycling forward again goes to s2.luan2009@gmail.com (index 1)
+        let next = cycle_account_at(&path, &cfg, 1);
+        assert_eq!(next.as_deref(), Some("s2.luan2009@gmail.com"));
+
+        // Cycling forward again wraps to maximusdev58@gmail.com
+        let next = cycle_account_at(&path, &cfg, 1);
+        assert_eq!(next.as_deref(), Some("maximusdev58@gmail.com"));
     }
 }

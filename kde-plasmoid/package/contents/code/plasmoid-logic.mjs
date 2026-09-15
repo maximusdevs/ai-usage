@@ -54,15 +54,52 @@ export function timeoutSeconds(value) {
     return Math.max(MIN_TIMEOUT_SECS, Math.min(MAX_TIMEOUT_SECS, Math.round(seconds)));
 }
 
-export function buildArgv(binary, timeoutSecs) {
+export function buildArgv(binary, timeoutSecs, options) {
     const bin = String(binary ?? '').trim() || DEFAULT_BINARY;
     const call = [bin, 'usage', '--json'];
+    if (options && options.refresh)
+        call.push('--refresh');
+    if (options && options.account)
+        call.push('--account', String(options.account));
     return ['timeout', '-k', String(TIMEOUT_KILL_GRACE_SECS), String(timeoutSeconds(timeoutSecs))]
         .concat(call);
 }
 
-export function buildCommand(binary, timeoutSecs) {
-    return buildArgv(binary, timeoutSecs).map(shellQuote).join(' ');
+export function buildCommand(binary, timeoutSecs, options) {
+    return buildArgv(binary, timeoutSecs, options).map(shellQuote).join(' ');
+}
+
+export function buildAccountSwitchCommand(binary, label) {
+    const bin = String(binary ?? '').trim() || DEFAULT_BINARY;
+    return [bin, 'account', 'switch', String(label ?? '')].map(shellQuote).join(' ');
+}
+
+export function buildProviderToggleCommand(binary, slug, enable) {
+    const bin = String(binary ?? '').trim() || DEFAULT_BINARY;
+    const action = enable ? 'enable' : 'disable';
+    return [bin, 'provider', action, String(slug ?? '')].map(shellQuote).join(' ');
+}
+
+export function buildProvidersListCommand(binary) {
+    const bin = String(binary ?? '').trim() || DEFAULT_BINARY;
+    return [bin, 'provider', 'list', '--json'].map(shellQuote).join(' ');
+}
+
+export function buildMonitorTestCommand(binary) {
+    const bin = String(binary ?? '').trim() || DEFAULT_BINARY;
+    return [bin, 'monitor', '--test'].map(shellQuote).join(' ');
+}
+
+export function buildSimulateRenewalCommand(binary) {
+    const bin = String(binary ?? '').trim() || DEFAULT_BINARY;
+    return [bin, 'monitor', '--simulate-renewal'].map(shellQuote).join(' ');
+}
+
+export function formatAccount(labelOrUser, showFullEmail = true) {
+    const s = String(labelOrUser ?? '').trim();
+    if (!showFullEmail && s.indexOf('@') !== -1)
+        return s.split('@')[0];
+    return s;
 }
 
 // Launching the TUI needs a terminal, and there is no portable way to probe
@@ -166,6 +203,20 @@ function normalizeSection(raw) {
     };
 }
 
+function normalizeAccount(raw) {
+    if (!raw || typeof raw !== 'object')
+        return null;
+    const label = safeText(raw.label, 120).trim();
+    const user = safeText(raw.user, 120).trim();
+    if (!label && !user)
+        return null;
+    return {
+        label: label || user,
+        user: user || label,
+        active: raw.active === true,
+    };
+}
+
 function normalizeEntry(raw) {
     if (!raw || typeof raw !== 'object')
         return null;
@@ -174,6 +225,8 @@ function normalizeEntry(raw) {
         return null;
     const sections = Array.isArray(raw.sections)
         ? raw.sections.slice(0, 128).map(normalizeSection) : [];
+    const extraModels = Array.isArray(raw.extra_models)
+        ? raw.extra_models.slice(0, 32).map(m => safeText(m, 100)) : [];
     return {
         id: id,
         // display_name is the canonical label the Rust core owns. Falling back
@@ -185,6 +238,7 @@ function normalizeEntry(raw) {
         error: safeText(raw.error, 500),
         fetchedAt: safeText(raw.fetched_at, 64),
         sections: sections,
+        extraModels: extraModels,
     };
 }
 
@@ -194,21 +248,44 @@ function normalizeEntry(raw) {
 export function parseReport(stdout) {
     const raw = String(stdout ?? '').trim();
     if (!raw)
-        return {ok: false, raw: '', entries: [], primary: ''};
+        return {ok: false, raw: '', entries: [], primary: '', accounts: []};
     let parsed;
     try {
         parsed = JSON.parse(raw);
     } catch (e) {
-        return {ok: false, raw: raw, entries: [], primary: ''};
+        return {ok: false, raw: raw, entries: [], primary: '', accounts: []};
     }
     if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.entries))
-        return {ok: false, raw: raw, entries: [], primary: ''};
+        return {ok: false, raw: raw, entries: [], primary: '', accounts: []};
+    const accounts = Array.isArray(parsed.accounts)
+        ? parsed.accounts.slice(0, 32).map(normalizeAccount).filter(Boolean) : [];
     return {
         ok: true,
         raw: raw,
         entries: parsed.entries.slice(0, 64).map(normalizeEntry).filter(Boolean),
         primary: safeText(parsed.primary, 60).trim(),
+        accounts: accounts,
     };
+}
+
+export function parseProviders(stdout) {
+    const raw = String(stdout ?? '').trim();
+    if (!raw)
+        return [];
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (e) {
+        return [];
+    }
+    if (!Array.isArray(parsed))
+        return [];
+    return parsed.map(p => ({
+        id: safeText(p.id || p.slug, 40).trim(),
+        name: safeText(p.name || p.display_name, 60).trim(),
+        enabled: p.enabled === true,
+        configured: p.configured === true,
+    })).filter(p => !!p.id);
 }
 
 // Which entry this applet instance shows. The configured vendor wins; the
@@ -384,6 +461,7 @@ export function cardFor(entry) {
         // An errored vendor outranks whatever its last good numbers said.
         accent: state === 'error' ? 'critical' : accent,
         error: state === 'error' ? errorMessage(entry.error) : '',
+        extraModels: entry.extraModels || [],
         windows: entry.sections.filter(s => s.type === 'metric').map(s => ({
             label: s.label,
             window: shortLabel(s.label),
@@ -494,3 +572,21 @@ export function paletteFromTheme(theme) {
 export function shouldStartFetch(pendingCommand, nextCommand) {
     return String(pendingCommand ?? '') === '' && String(nextCommand ?? '') !== '';
 }
+
+export function filterActiveRenewals(renewals, dismissedIds) {
+    if (!Array.isArray(renewals)) return [];
+    var dismissed = Array.isArray(dismissedIds) ? dismissedIds : [];
+    return renewals.filter(function(r) {
+        return r && r.id && dismissed.indexOf(r.id) === -1;
+    });
+}
+
+export function formatRenewalSummary(renewal, showFullEmail) {
+    if (!renewal) return "";
+    var acct = formatAccount(renewal.account_label, showFullEmail);
+    var prov = renewal.provider_name || renewal.provider_id || "AI";
+    var metric = renewal.metric_label || "Cota";
+    var win = renewal.window_type ? " (" + renewal.window_type + ")" : "";
+    return acct + " [" + prov + "]: " + metric + win;
+}
+

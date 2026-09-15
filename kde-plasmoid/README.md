@@ -149,6 +149,18 @@ no widget change:
 Both layouts are projections of one report, so switching the layout never
 refetches.
 
+### Quota Renewal Notifications & Badge
+- **Taskbar Renewal Badge (`🔔 [N]`):** When one or more tracked accounts have their 5-hour or weekly quota window reset/renewed, a prominent notification badge appears in the panel indicating how many accounts are ready for use.
+- **Renewal Alert Card:** Opening the popup displays a "Cotas Renovadas" notification card showing which accounts and quota pools renewed.
+- **Dismiss on Demand:** Clicking the bell icon or the "✕ Dispensar" button marks the alerts as dismissed and removes the notification badge. Dismissed IDs are saved in persistent widget settings (`dismissedRenewals`).
+- **Test Tool:** Use the "Simulate Renewal Alert" button in widget configuration to test the notification badge and card interactions without waiting for real quota resets.
+
+### Enhanced Display & Formatting
+- **Panel Font Size:** Inherits the desktop panel's standard font (`Kirigami.Theme.defaultFont`) with an option in Settings to scale font size (`System default` or explicit pt).
+- **Independent Progress Bars:** Toggling off progress bars in compact mode hides them exclusively on the taskbar panel; full progress bars remain clearly visible inside the expanded popup.
+- **Extra Models Visual Linking:** Sub-models (e.g. Antigravity Claude / Gemini extras) are displayed neatly grouped and linked under their primary provider, matching their availability status.
+- **Flexible Provider Label:** Configure panel items to display Provider Icon only, Name only, or both.
+
 ## Shared logic
 
 Everything that can be pure lives in `package/contents/code/plasmoid-logic.mjs`

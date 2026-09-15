@@ -236,6 +236,63 @@ ColumnLayout {
                         }
                     }
                 }
+
+                // --- extra models --------------------------------------------
+                Repeater {
+                    model: {
+                        if (card.isError || !cards.applet.showExtraModels || !card.modelData.extraModels)
+                            return [];
+                        const selected = Array.from(cards.applet.selectedExtraModels || []);
+                        if (selected.length === 0)
+                            return card.modelData.extraModels;
+                        return card.modelData.extraModels.filter(m => selected.indexOf(m) !== -1);
+                    }
+
+                    RowLayout {
+                        id: cardModelRow
+                        required property string modelData
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        readonly property var poolPct: {
+                            for (const w of card.modelData.windows) {
+                                if (/claude|gpt/i.test(w.label))
+                                    return w.percent;
+                            }
+                            return null;
+                        }
+                        readonly property bool isExhausted: poolPct !== null && poolPct >= 100
+
+                        Kirigami.Icon {
+                            source: cardModelRow.isExhausted ? "dialog-warning" : "emblem-favorite-symbolic"
+                            implicitWidth: Kirigami.Units.iconSizes.small
+                            implicitHeight: Kirigami.Units.iconSizes.small
+                            color: cardModelRow.isExhausted
+                                ? Kirigami.Theme.negativeTextColor
+                                : Kirigami.Theme.positiveTextColor
+                        }
+
+                        PlasmaComponents.Label {
+                            Layout.fillWidth: true
+                            text: "↳ " + cardModelRow.modelData
+                            textFormat: Text.PlainText
+                            font: Kirigami.Theme.smallFont
+                        }
+
+                        PlasmaComponents.Label {
+                            text: {
+                                if (cardModelRow.poolPct === null) return "";
+                                if (cardModelRow.isExhausted) return i18n("Sem crédito (100%)");
+                                return i18n("Compartilhado (%1%)", cardModelRow.poolPct);
+                            }
+                            textFormat: Text.PlainText
+                            font: Kirigami.Theme.smallFont
+                            color: cardModelRow.isExhausted
+                                ? Kirigami.Theme.negativeTextColor
+                                : (cardModelRow.poolPct >= 75 ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.positiveTextColor)
+                        }
+                    }
+                }
             }
         }
     }

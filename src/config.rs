@@ -65,6 +65,33 @@ pub struct Config {
     pub ollama: OllamaConfig,
     /// User-defined providers, one `[[custom]]` table each.
     pub custom: Vec<CustomProviderConfig>,
+    /// Global multi-provider accounts grouping providers under a user identity.
+    pub accounts: Vec<AccountConfig>,
+    /// Currently active account label from config.
+    pub active_account: Option<String>,
+}
+
+/// A named account grouping multiple AI providers under a user identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct AccountConfig {
+    /// Identifier for this account, e.g. "personal", "work".
+    pub label: String,
+    /// User identity / email associated with this account (e.g. "user@example.com").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// Which providers belong to this account (e.g. ["antigravity", "openai"]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<String>,
+}
+
+impl AccountConfig {
+    /// Check whether this account includes the given provider by its slug or name.
+    pub fn has_provider(&self, provider_slug: &str) -> bool {
+        self.providers
+            .iter()
+            .any(|p| p.trim().eq_ignore_ascii_case(provider_slug.trim()))
+    }
 }
 
 /// UI / dispatch preferences. Currently just `primary` — which vendor the
@@ -81,11 +108,38 @@ pub struct UiConfig {
     pub overview_vendors: Option<Vec<VendorId>>,
     /// Layout style for vendor navigation in the TUI: sidebar | navbar | none.
     pub vendor_box: Option<VendorBoxStyle>,
+    /// Whether to show full email addresses or only the username part in account indicators.
+    pub show_full_email: Option<bool>,
+    /// Whether to display extra model information (such as Antigravity third-party models).
+    pub show_extra_models: Option<bool>,
+    /// Whether desktop notifications should be sent when account quotas reset.
+    pub notify_resets: Option<bool>,
 }
 
 impl UiConfig {
     pub fn vendor_box(&self) -> VendorBoxStyle {
         self.vendor_box.unwrap_or_default()
+    }
+
+    pub fn show_full_email(&self) -> bool {
+        self.show_full_email.unwrap_or(true)
+    }
+
+    pub fn show_extra_models(&self) -> bool {
+        self.show_extra_models.unwrap_or(false)
+    }
+
+    pub fn notify_resets(&self) -> bool {
+        self.notify_resets.unwrap_or(true)
+    }
+}
+
+/// Format an account identifier or email according to user display preference.
+pub fn format_account_label(email_or_user: &str, show_full_email: bool) -> String {
+    if !show_full_email && email_or_user.contains('@') {
+        email_or_user.split('@').next().unwrap_or(email_or_user).to_string()
+    } else {
+        email_or_user.to_string()
     }
 }
 
@@ -514,6 +568,123 @@ pub fn add_anthropic_account_to_doc(
     table["label"] = value(label);
     table["credentials_path"] = value(credentials_path);
     accounts.push(table);
+    Ok(())
+}
+
+/// Append a `[[accounts]]` entry to a parsed config document, in place,
+/// preserving existing comments and structure.
+pub fn append_global_account(
+    doc: &mut toml_edit::DocumentMut,
+    label: &str,
+    user: Option<&str>,
+    providers: &[&str],
+) -> Result<()> {
+    use toml_edit::{Item, Table, value};
+
+    validate_account_label(label)?;
+
+    let accounts = doc
+        .entry("accounts")
+        .or_insert_with(|| Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+    let accounts = accounts.as_array_of_tables_mut().ok_or_else(|| {
+        AppError::Other("[[accounts]] in config.toml is not an array of tables".into())
+    })?;
+
+    let exists = accounts
+        .iter()
+        .any(|t| t.get("label").and_then(Item::as_str) == Some(label));
+    if exists {
+        return Ok(());
+    }
+
+    let mut table = Table::new();
+    table["label"] = value(label);
+    if let Some(u) = user {
+        table["user"] = value(u);
+    }
+    if !providers.is_empty() {
+        let mut arr = toml_edit::Array::new();
+        for p in providers {
+            arr.push(*p);
+        }
+        table["providers"] = Item::Value(toml_edit::Value::Array(arr));
+    }
+    accounts.push(table);
+    Ok(())
+}
+
+/// Synchronize the `[[accounts]]` array of tables with canonical account configurations,
+/// updating existing tables, appending new ones, and removing duplicates or legacy prefix accounts.
+pub fn sync_global_accounts(
+    doc: &mut toml_edit::DocumentMut,
+    accounts: &[AccountConfig],
+) -> Result<()> {
+    use toml_edit::{Item, Table, value};
+
+    for acct in accounts {
+        validate_account_label(&acct.label)?;
+    }
+
+    let aot = doc
+        .entry("accounts")
+        .or_insert_with(|| Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+    let aot = aot.as_array_of_tables_mut().ok_or_else(|| {
+        AppError::Other("[[accounts]] in config.toml is not an array of tables".into())
+    })?;
+
+    // 1. Remove duplicate or obsolete accounts that don't match any canonical account
+    let mut i = 0;
+    while i < aot.len() {
+        let label_opt = aot.get(i).and_then(|t| t.get("label")).and_then(Item::as_str);
+        if let Some(lbl) = label_opt {
+            if !accounts.iter().any(|a| crate::account_store::accounts_match_or_prefix(&a.label, lbl)) {
+                aot.remove(i);
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    // 2. Update existing tables or add missing
+    for acct in accounts {
+        let p_refs: Vec<&str> = acct.providers.iter().map(String::as_str).collect();
+        let existing_pos = aot.iter().position(|t| {
+            t.get("label")
+                .and_then(Item::as_str)
+                .map(|l| crate::account_store::accounts_match_or_prefix(l, &acct.label))
+                .unwrap_or(false)
+        });
+
+        if let Some(pos) = existing_pos {
+            let table = aot.get_mut(pos).unwrap();
+            table["label"] = value(&acct.label);
+            if let Some(ref u) = acct.user {
+                table["user"] = value(u);
+            }
+            if !p_refs.is_empty() {
+                let mut arr = toml_edit::Array::new();
+                for p in &p_refs {
+                    arr.push(*p);
+                }
+                table["providers"] = Item::Value(toml_edit::Value::Array(arr));
+            }
+        } else {
+            let mut table = Table::new();
+            table["label"] = value(&acct.label);
+            if let Some(ref u) = acct.user {
+                table["user"] = value(u);
+            }
+            if !p_refs.is_empty() {
+                let mut arr = toml_edit::Array::new();
+                for p in &p_refs {
+                    arr.push(*p);
+                }
+                table["providers"] = Item::Value(toml_edit::Value::Array(arr));
+            }
+            aot.push(table);
+        }
+    }
+
     Ok(())
 }
 
@@ -1660,6 +1831,7 @@ impl Config {
                 // literally, so a documented `credentials_path = "~/..."`
                 // silently pointed at a directory named `~`.
                 config.expand_paths();
+                config.canonicalize_accounts();
                 config.validate()?;
                 #[cfg(unix)]
                 config.protect_inline_secrets(path)?;
@@ -1672,6 +1844,47 @@ impl Config {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(AppError::io_at(path, e)),
         }
+    }
+
+    /// Normalize configured accounts so that labels reflect full emails where known,
+    /// and duplicate accounts (e.g. prefix and full email) are merged.
+    pub fn canonicalize_accounts(&mut self) {
+        for acct in self.accounts.iter_mut() {
+            if !acct.label.contains('@') {
+                if let Some(ref u) = acct.user {
+                    if u.contains('@') && crate::account_store::accounts_match_or_prefix(&acct.label, u) {
+                        acct.label = u.clone();
+                    }
+                }
+            }
+        }
+        let mut deduplicated: Vec<AccountConfig> = Vec::new();
+        for acct in std::mem::take(&mut self.accounts) {
+            if let Some(existing) = deduplicated.iter_mut().find(|a| {
+                crate::account_store::accounts_match_or_prefix(&a.label, &acct.label)
+                    || (a.user.is_some()
+                        && acct.user.is_some()
+                        && crate::account_store::accounts_match_or_prefix(
+                            a.user.as_deref().unwrap(),
+                            acct.user.as_deref().unwrap(),
+                        ))
+            }) {
+                if !existing.label.contains('@') && acct.label.contains('@') {
+                    existing.label = acct.label.clone();
+                }
+                if existing.user.is_none() && acct.user.is_some() {
+                    existing.user = acct.user.clone();
+                }
+                for p in acct.providers {
+                    if !existing.has_provider(&p) {
+                        existing.providers.push(p);
+                    }
+                }
+            } else {
+                deduplicated.push(acct);
+            }
+        }
+        self.accounts = deduplicated;
     }
 
     fn expand_paths(&mut self) {
@@ -1862,6 +2075,43 @@ impl Config {
             .copied()
             .filter(|id| self.is_enabled(*id))
             .collect()
+    }
+
+    /// Find a configured global account by label (case-insensitive).
+    pub fn find_account(&self, label: &str) -> Option<&AccountConfig> {
+        self.accounts
+            .iter()
+            .find(|a| a.label.eq_ignore_ascii_case(label.trim()))
+    }
+
+    /// Resolve the active account label:
+    /// 1. An explicit override passed (e.g. from CLI `--account`)
+    /// 2. The persisted state in `<cache-dir>/active_account`
+    /// 3. The `active_account` field in `config.toml`
+    pub fn resolve_active_account(&self, cli_override: Option<&str>) -> Option<String> {
+        self.resolve_active_account_at(None, cli_override)
+    }
+
+    /// Test-friendly counterpart to [`resolve_active_account`] taking an explicit state path.
+    pub fn resolve_active_account_at(
+        &self,
+        state_path: Option<&std::path::Path>,
+        cli_override: Option<&str>,
+    ) -> Option<String> {
+        if let Some(cli) = cli_override {
+            let trimmed = cli.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+        let persisted = match state_path {
+            Some(p) => crate::active::read_account_from(p),
+            None => crate::active::read_account(),
+        };
+        if let Some(persisted) = persisted {
+            return Some(persisted);
+        }
+        self.active_account.clone()
     }
 
     /// Validate cross-entry constraints that serde cannot express. Account
@@ -4460,5 +4710,46 @@ enabled = true
         enable_vendors_in(&path, &[]).unwrap();
 
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn accounts_and_active_account_parse_from_toml() {
+        let text = r#"
+active_account = "personal"
+
+[[accounts]]
+label = "personal"
+user = "user@gmail.com"
+providers = ["antigravity", "openai"]
+
+[[accounts]]
+label = "work"
+user = "work@company.com"
+providers = ["anthropic", "openrouter"]
+"#;
+        let config: Config = toml::from_str(text).unwrap();
+        assert_eq!(config.active_account.as_deref(), Some("personal"));
+        assert_eq!(config.accounts.len(), 2);
+
+        let personal = config.find_account("personal").unwrap();
+        assert_eq!(personal.user.as_deref(), Some("user@gmail.com"));
+        assert!(personal.has_provider("antigravity"));
+        assert!(personal.has_provider("openai"));
+        assert!(!personal.has_provider("anthropic"));
+
+        let work = config.find_account("work").unwrap();
+        assert_eq!(work.user.as_deref(), Some("work@company.com"));
+        assert!(work.has_provider("anthropic"));
+
+        let td = tempfile::tempdir().unwrap();
+        let state_path = td.path().join("active_account");
+        assert_eq!(
+            config.resolve_active_account_at(Some(&state_path), Some("override")),
+            Some("override".to_string())
+        );
+        assert_eq!(
+            config.resolve_active_account_at(Some(&state_path), None),
+            Some("personal".to_string())
+        );
     }
 }

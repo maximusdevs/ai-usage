@@ -108,6 +108,9 @@ async fn run() -> io::Result<()> {
             ai_usagebar::config::config_path_hint()
         ))
     })?;
+    let cp = ai_usagebar::config::resolved_path();
+    let _ = ai_usagebar::account_store::detect_and_sync_account_session(&mut config, cp.as_deref());
+
     let tabs = tabs_with_desktop(&config);
     if tabs.is_empty() {
         eprintln!(
@@ -127,6 +130,9 @@ async fn run() -> io::Result<()> {
     app.context_enabled = config.context.enabled;
     app.overview_vendors = config.ui.overview_vendors.clone();
     app.vendor_box = config.ui.vendor_box();
+    app.active_account =
+        ai_usagebar::active::read_account().or_else(|| config.active_account.clone());
+    app.has_accounts = !config.accounts.is_empty();
 
     // RAII: restoring the terminal must survive an error or a panic in the
     // loop below. Doing it inline left the user in raw mode on the alternate
@@ -223,6 +229,9 @@ fn reload_config(
     app.context_enabled = config.context.enabled;
     app.overview_vendors = config.ui.overview_vendors.clone();
     app.vendor_box = config.ui.vendor_box();
+    app.active_account =
+        ai_usagebar::active::read_account().or_else(|| config.active_account.clone());
+    app.has_accounts = !config.accounts.is_empty();
     app.set_tabs(tabs_with_desktop(config));
     if reselect_primary {
         app.select_primary(config.ui.primary);
@@ -306,6 +315,10 @@ where
             }
             // Periodic auto-refresh of all tabs.
             _ = tick.tick() => {
+                let cp = ai_usagebar::config::resolved_path();
+                if let Ok(true) = ai_usagebar::account_store::detect_and_sync_account_session(config, cp.as_deref()) {
+                    app.has_accounts = !config.accounts.is_empty();
+                }
                 spawn_all(app, client, config, &tx);
             }
             // Hot-reload config.toml when it changes on disk (external editor,
@@ -419,11 +432,37 @@ where
                         spawn_context_scan(app, config, &context_tx);
                         continue;
                     }
+                    if matches!(k.code, KeyCode::Char('a') | KeyCode::Char('A'))
+                        && !k.modifiers.intersects(
+                            KeyModifiers::CONTROL
+                                | KeyModifiers::ALT
+                                | KeyModifiers::SUPER
+                                | KeyModifiers::HYPER
+                                | KeyModifiers::META,
+                        )
+                    {
+                        let cp = ai_usagebar::config::resolved_path();
+                        if let Ok(true) = ai_usagebar::account_store::detect_and_sync_account_session(config, cp.as_deref()) {
+                            app.has_accounts = !config.accounts.is_empty();
+                        }
+                        if !config.accounts.is_empty()
+                            && let Some(new_label) = ai_usagebar::active::cycle_account(config, 1)
+                        {
+                            config.active_account = Some(new_label.clone());
+                            app.active_account = Some(new_label);
+                            spawn_all(app, client, config, &tx);
+                        }
+                        continue;
+                    }
                     if handle_key(app, k.code, k.modifiers) {
                         return Ok(());
                     }
                     // Refresh-on-key handling.
                     if matches!(k.code, KeyCode::Char('r')) {
+                        let cp = ai_usagebar::config::resolved_path();
+                        if let Ok(true) = ai_usagebar::account_store::detect_and_sync_account_session(config, cp.as_deref()) {
+                            app.has_accounts = !config.accounts.is_empty();
+                        }
                         if app.overview {
                             // No single active tab on the Overview — refresh all.
                             spawn_all(app, client, config, &tx);

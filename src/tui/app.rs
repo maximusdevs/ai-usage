@@ -28,6 +28,16 @@ pub enum TabState {
         /// has no plan without a snapshot.
         plan: Option<String>,
     },
+    /// Quota snapshot preserved from a previous session or inactive account.
+    Snapshot(Box<SnapshotTab>),
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotTab {
+    pub entry: crate::account_store::ReportEntry,
+    pub saved_at: chrono::DateTime<chrono::Utc>,
+    pub account_label: String,
+    pub user: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -279,6 +289,10 @@ pub struct App {
     pub context: Option<crate::tui::context::ContextState>,
     /// Presentation style for the vendor navigation box (`[ui] vendor_box`).
     pub vendor_box: crate::config::VendorBoxStyle,
+    /// Currently active account label, if multi-account is active or configured.
+    pub active_account: Option<String>,
+    /// Whether any accounts are configured in `config.accounts`.
+    pub has_accounts: bool,
 }
 
 impl App {
@@ -310,6 +324,8 @@ impl App {
             context_generation: 0,
             context: None,
             vendor_box: crate::config::VendorBoxStyle::Sidebar,
+            active_account: None,
+            has_accounts: false,
         }
     }
 
@@ -365,7 +381,7 @@ impl App {
         if !self.refreshing_tabs.insert(tab.clone()) {
             return false;
         }
-        if !matches!(self.tabs[index], TabState::Ready(_)) {
+        if !matches!(self.tabs[index], TabState::Ready(_) | TabState::Snapshot(_)) {
             self.tabs[index] = TabState::Loading;
         }
         true
@@ -470,33 +486,184 @@ impl App {
 
 /// Fetch and render one tab — returns a `TabState`.
 pub async fn refresh_one(client: &Client, config: &Config, tab: &TabId) -> TabState {
-    match build_outcome(client, config, tab).await {
+    refresh_one_with_ttl(client, config, tab, DEFAULT_TTL).await
+}
+
+/// Fetch and render one tab with an explicit cache TTL.
+pub async fn refresh_one_with_ttl(
+    client: &Client,
+    config: &Config,
+    tab: &TabId,
+    ttl: Duration,
+) -> TabState {
+    let provider_slug = match &tab.source {
+        TabSource::Builtin(v) => v.slug(),
+        TabSource::Custom { id, .. } => id.as_str(),
+    };
+
+    let resolved_label = config.resolve_active_account(None);
+    let active_account = resolved_label
+        .as_deref()
+        .and_then(|lbl| config.find_account(lbl));
+
+    match build_outcome_with_ttl(client, config, tab, ttl).await {
         Ok(outcome) => {
-            // Resolve the cache age (a duration from "now" at fetch time) into an
-            // absolute instant ONCE. Without this, sections_for would recompute
-            // `Utc::now() - cache_age` on every draw and the displayed time would
-            // tick upward in real time instead of holding at the last refresh.
             let now = Utc::now();
             let fetched_at = outcome
                 .cache_age
                 .map(|age| now - chrono::Duration::from_std(age).unwrap_or_default());
-            TabState::Ready(Box::new(ReadyTab {
+            let live_user = outcome
+                .snapshot
+                .user_email()
+                .map(str::to_string)
+                .or_else(|| crate::account_store::detect_provider_email(provider_slug, config));
+
+            let state = TabState::Ready(Box::new(ReadyTab {
                 snapshot: outcome.snapshot,
                 stale: outcome.stale,
                 last_error: outcome.last_error.map(|(code, message)| {
                     (code, crate::display::sanitize_untrusted_field(&message))
                 }),
                 fetched_at,
-            }))
+            }));
+
+            // Record live data into the account to which this live session belongs:
+            let target_account_for_recording = if let Some(ref email) = live_user {
+                config
+                    .accounts
+                    .iter()
+                    .find(|a| {
+                        a.user
+                            .as_deref()
+                            .map(|u| crate::account_store::accounts_match_or_prefix(u, email))
+                            .unwrap_or(false)
+                    })
+                    .or_else(|| {
+                        active_account.filter(|a| {
+                            a.user
+                                .as_deref()
+                                .map(|u| crate::account_store::accounts_match_or_prefix(u, email))
+                                .unwrap_or(false)
+                        })
+                    })
+            } else {
+                active_account
+            };
+
+            if let Some(target_acct) = target_account_for_recording {
+                let entry = crate::report::entry_from_state_with_config(config, tab, &state, now);
+                let _ = crate::account_store::record_provider_entry(
+                    &target_acct.label,
+                    target_acct.user.as_deref().or(live_user.as_deref()),
+                    &entry,
+                );
+            }
+
+            // Now determine what to display based on the active account:
+            if let Some(acct) = active_account {
+                let matches_user = match (&live_user, &acct.user) {
+                    (Some(live), Some(user)) => crate::account_store::accounts_match_or_prefix(user, live),
+                    (None, Some(_)) => {
+                        // Live session didn't expose user. Check if account has this provider:
+                        acct.has_provider(provider_slug)
+                    }
+                    _ => true,
+                };
+
+                if !matches_user {
+                    // This live session belongs to a different account!
+                    // Return saved snapshot for the active account if it exists:
+                    let snap_opt = crate::account_store::get_snapshot(&acct.label)
+                        .or_else(|| acct.user.as_deref().and_then(crate::account_store::get_snapshot));
+                    if let Some(snap) = snap_opt
+                        && let Some(entry) = snap.entries.iter().find(|e| {
+                            e.id.eq_ignore_ascii_case(provider_slug)
+                                || e.name.eq_ignore_ascii_case(provider_slug)
+                        })
+                    {
+                        let mut entry = entry.clone();
+                        crate::account_store::update_snapshot_entries(
+                            std::slice::from_mut(&mut entry),
+                            Utc::now(),
+                        );
+                        return TabState::Snapshot(Box::new(SnapshotTab {
+                            entry,
+                            saved_at: snap.saved_at,
+                            account_label: snap.account_label,
+                            user: snap.user,
+                        }));
+                    }
+
+                    // Account has no usage / session on this provider: return clean zeroed state!
+                    let zeroed_entry = crate::report::zeroed_entry_for_tab(config, tab);
+                    return TabState::Snapshot(Box::new(SnapshotTab {
+                        entry: zeroed_entry,
+                        saved_at: now,
+                        account_label: acct.label.clone(),
+                        user: acct.user.clone(),
+                    }));
+                }
+            }
+
+            state
         }
-        Err(e) => TabState::error_with_plan(
-            crate::display::sanitize_untrusted_field(&e.user_message()),
-            e.plan().map(str::to_string),
-        ),
+        Err(e) => {
+            if let Some(acct) = active_account {
+                // If active account has a saved snapshot for this provider, show it:
+                let snap_opt = crate::account_store::get_snapshot(&acct.label)
+                    .or_else(|| acct.user.as_deref().and_then(crate::account_store::get_snapshot));
+                if let Some(snap) = snap_opt
+                    && let Some(entry) = snap.entries.iter().find(|e| {
+                        e.id.eq_ignore_ascii_case(provider_slug)
+                            || e.name.eq_ignore_ascii_case(provider_slug)
+                    })
+                {
+                    let mut entry = entry.clone();
+                    crate::account_store::update_snapshot_entries(
+                        std::slice::from_mut(&mut entry),
+                        Utc::now(),
+                    );
+                    return TabState::Snapshot(Box::new(SnapshotTab {
+                        entry,
+                        saved_at: snap.saved_at,
+                        account_label: snap.account_label,
+                        user: snap.user,
+                    }));
+                }
+
+                // If this provider does NOT belong to this account (e.g. maximusdev58 not using codex),
+                // show zerado instead of an error:
+                if !acct.has_provider(provider_slug) {
+                    let zeroed_entry = crate::report::zeroed_entry_for_tab(config, tab);
+                    return TabState::Snapshot(Box::new(SnapshotTab {
+                        entry: zeroed_entry,
+                        saved_at: Utc::now(),
+                        account_label: acct.label.clone(),
+                        user: acct.user.clone(),
+                    }));
+                }
+            }
+
+            TabState::error_with_plan(
+                crate::display::sanitize_untrusted_field(&e.user_message()),
+                e.plan().map(str::to_string),
+            )
+        }
     }
 }
 
+
+#[allow(dead_code)]
 async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<VendorOutcome> {
+    build_outcome_with_ttl(client, config, tab, DEFAULT_TTL).await
+}
+
+async fn build_outcome_with_ttl(
+    client: &Client,
+    config: &Config,
+    tab: &TabId,
+    ttl: Duration,
+) -> Result<VendorOutcome> {
     let vendor = match &tab.source {
         TabSource::Builtin(vendor) => *vendor,
         TabSource::Custom { id, .. } => {
@@ -507,8 +674,13 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             })?;
             let api_key = spec.resolve_api_key()?;
             let cache = crate::cache::Cache::for_vendor_account("custom", id)?;
+            let cache_ttl = if ttl == Duration::ZERO {
+                Duration::ZERO
+            } else {
+                spec.cache_ttl()
+            };
             let outcome =
-                crate::custom::fetch_snapshot(client, spec, &api_key, &cache, spec.cache_ttl())
+                crate::custom::fetch_snapshot(client, spec, &api_key, &cache, cache_ttl)
                     .await?;
             return Ok(outcome.into());
         }
@@ -541,7 +713,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &creds_target,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.map(crate::usage::VendorSnapshot::Anthropic))
@@ -559,7 +731,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &key,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
                 config.anthropic_api.monthly_limit,
             )
             .await?;
@@ -577,7 +749,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &api_key,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.into())
@@ -595,7 +767,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &api_key,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
                 config.zai.plan_tier.as_deref(),
             )
             .await?;
@@ -610,7 +782,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             let creds_path = config.openai.resolve_auth_path(label)?;
             let endpoints = crate::openai::fetch::Endpoints::default();
             let outcome =
-                crate::openai::fetch_snapshot(client, &creds_path, &cache, &endpoints, DEFAULT_TTL)
+                crate::openai::fetch_snapshot(client, &creds_path, &cache, &endpoints, ttl)
                     .await?;
             Ok(outcome.into())
         }
@@ -619,7 +791,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             let cache = crate::cache::Cache::for_vendor("copilot")?;
             let endpoints = crate::copilot::fetch::Endpoints::default();
             let outcome =
-                crate::copilot::fetch_snapshot(client, &token, &cache, &endpoints, DEFAULT_TTL)
+                crate::copilot::fetch_snapshot(client, &token, &cache, &endpoints, ttl)
                     .await?;
             Ok(outcome.into())
         }
@@ -632,7 +804,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             let cache = crate::cache::Cache::for_vendor("deepseek")?;
             let endpoints = crate::deepseek::fetch::Endpoints::default();
             let outcome =
-                crate::deepseek::fetch_snapshot(client, &api_key, &cache, &endpoints, DEFAULT_TTL)
+                crate::deepseek::fetch_snapshot(client, &api_key, &cache, &endpoints, ttl)
                     .await?;
             Ok(outcome.into())
         }
@@ -644,7 +816,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &auth,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.into())
@@ -662,7 +834,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &api_key,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
                 config.kilo.organization_id.as_deref(),
             )
             .await?;
@@ -677,7 +849,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             let cache = crate::cache::Cache::for_vendor("novita")?;
             let endpoints = crate::novita::fetch::Endpoints::default();
             let outcome =
-                crate::novita::fetch_snapshot(client, &api_key, &cache, &endpoints, DEFAULT_TTL)
+                crate::novita::fetch_snapshot(client, &api_key, &cache, &endpoints, ttl)
                     .await?;
             Ok(outcome.into())
         }
@@ -695,7 +867,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &api_key,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
                 currency,
             )
             .await?;
@@ -714,7 +886,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &key,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
                 config.grok.team_id.as_deref(),
             )
             .await?;
@@ -730,7 +902,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &config.supergrok.grok_binary,
                 &scope_paths,
                 &cache,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.into())
@@ -744,7 +916,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 config.antigravity.oauth_client_secret.as_deref(),
             );
             let outcome =
-                crate::antigravity::fetch_snapshot(client, &cache, DEFAULT_TTL, oauth.as_ref())
+                crate::antigravity::fetch_snapshot(client, &cache, ttl, oauth.as_ref())
                     .await?;
             Ok(outcome.into())
         }
@@ -757,7 +929,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
             let cache = crate::cache::Cache::for_vendor("minimax")?;
             let endpoints = crate::minimax::fetch::Endpoints::for_region(&config.minimax.region);
             let outcome =
-                crate::minimax::fetch_snapshot(client, &api_key, &cache, &endpoints, DEFAULT_TTL)
+                crate::minimax::fetch_snapshot(client, &api_key, &cache, &endpoints, ttl)
                     .await?;
             Ok(outcome.into())
         }
@@ -782,7 +954,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &agent_auth_path,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.into())
@@ -796,7 +968,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 .map(Ok)
                 .unwrap_or_else(crate::kiro::db::default_db_path)?;
             let outcome =
-                crate::kiro::fetch_snapshot(client, &db_path, &cache, DEFAULT_TTL).await?;
+                crate::kiro::fetch_snapshot(client, &db_path, &cache, ttl).await?;
             Ok(outcome.into())
         }
         VendorId::NousResearch => {
@@ -827,7 +999,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &api_key,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.into())
@@ -842,7 +1014,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &credential.token,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.into())
@@ -861,7 +1033,7 @@ async fn build_outcome(client: &Client, config: &Config, tab: &TabId) -> Result<
                 &config.ollama.plan,
                 &cache,
                 &endpoints,
-                DEFAULT_TTL,
+                ttl,
             )
             .await?;
             Ok(outcome.into())
@@ -1565,4 +1737,35 @@ mod tests {
             vec![Duration::ZERO, Duration::ZERO, step]
         );
     }
+
+    #[test]
+    fn zeroed_entry_for_tab_generates_clean_zero_percent_sections() {
+        let config = Config::default();
+        let agy_tab = TabId::vendor(VendorId::Antigravity);
+        let entry = crate::report::zeroed_entry_for_tab(&config, &agy_tab);
+        assert_eq!(entry.id, "antigravity");
+        assert_eq!(entry.plan.as_deref(), Some("Google AI Pro"));
+        assert!(!entry.sections.is_empty());
+        for sec in &entry.sections {
+            if let crate::account_store::ReportSection::Metric { percent, value, .. } = sec {
+                assert_eq!(*percent, 0);
+                assert_eq!(value, "0%");
+            }
+        }
+
+        let openai_tab = TabId::vendor(VendorId::Openai);
+        let oai_entry = crate::report::zeroed_entry_for_tab(&config, &openai_tab);
+        assert_eq!(oai_entry.id, "openai");
+        assert_eq!(oai_entry.plan.as_deref(), Some("ChatGPT Free"));
+        let mut had_metric = false;
+        for sec in &oai_entry.sections {
+            if let crate::account_store::ReportSection::Metric { percent, value, .. } = sec {
+                assert_eq!(*percent, 0);
+                assert_eq!(value, "0%");
+                had_metric = true;
+            }
+        }
+        assert!(had_metric);
+    }
 }
+

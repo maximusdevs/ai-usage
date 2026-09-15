@@ -153,6 +153,14 @@ pub enum Command {
         /// Machine-readable output.
         #[arg(long)]
         json: bool,
+
+        /// Filter usage report to a specific named account.
+        #[arg(long)]
+        account: Option<String>,
+
+        /// Force fresh fetch from live providers, bypassing cache.
+        #[arg(long)]
+        refresh: bool,
     },
 
     /// Turn on vendors whose credentials already exist on this machine
@@ -187,6 +195,58 @@ pub enum Command {
         #[command(subcommand)]
         provider: AuthProvider,
     },
+
+    /// Monitor quota resets in background and send desktop notifications when quotas renew.
+    Monitor {
+        /// Check interval in seconds (default: 30s).
+        #[arg(long, default_value = "30")]
+        interval: u64,
+
+        /// Run a single check pass and exit.
+        #[arg(long)]
+        once: bool,
+
+        /// Send an immediate sample test notification to verify desktop notifications.
+        #[arg(long)]
+        test: bool,
+
+        /// Simulate a test quota renewal notice for the widget.
+        #[arg(long)]
+        simulate_renewal: bool,
+
+        /// Clear any active test renewal notices.
+        #[arg(long)]
+        clear_renewals: bool,
+    },
+
+    /// Manage AI providers: list, enable, or disable providers without editing config.toml.
+    #[command(alias = "providers")]
+    Provider {
+        #[command(subcommand)]
+        action: ProviderAction,
+    },
+}
+
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum ProviderAction {
+    /// List all AI providers, their enabled state, and credential status.
+    List {
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Enable an AI provider by name or slug (e.g. antigravity, deepseek, kimi).
+    Enable {
+        /// Provider name or slug.
+        name: String,
+    },
+
+    /// Disable an AI provider by name or slug.
+    Disable {
+        /// Provider name or slug.
+        name: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug, Clone)]
@@ -216,6 +276,13 @@ pub enum SettingsAction {
 
 #[derive(clap::Subcommand, Debug, Clone)]
 pub enum AccountAction {
+    /// List all configured accounts, their user identity, and associated providers.
+    List {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Register an isolated account and open Claude Code to sign it in.
     Add {
         /// Stable name used by `--account`, the TUI, and desktop apps.
@@ -489,8 +556,15 @@ mod tests {
 
     #[test]
     fn usage_subcommand_parses_machine_readable_mode() {
-        let cli = Cli::parse_from(["ai-usagebar", "usage", "--json"]);
-        assert!(matches!(cli.command, Some(Command::Usage { json: true })));
+        let cli = Cli::parse_from(["ai-usagebar", "usage", "--json", "--refresh"]);
+        assert!(matches!(
+            cli.command,
+            Some(Command::Usage {
+                json: true,
+                account: None,
+                refresh: true,
+            })
+        ));
     }
 
     #[test]
