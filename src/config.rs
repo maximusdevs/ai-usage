@@ -114,6 +114,10 @@ pub struct UiConfig {
     pub show_extra_models: Option<bool>,
     /// Whether desktop notifications should be sent when account quotas reset.
     pub notify_resets: Option<bool>,
+    /// Whether multi-account switching and snapshots are enabled, or individual session mode.
+    pub multi_account: Option<bool>,
+    /// Refresh interval in seconds.
+    pub refresh_interval: Option<u64>,
 }
 
 impl UiConfig {
@@ -131,6 +135,14 @@ impl UiConfig {
 
     pub fn notify_resets(&self) -> bool {
         self.notify_resets.unwrap_or(true)
+    }
+
+    pub fn multi_account(&self) -> bool {
+        self.multi_account.unwrap_or(true)
+    }
+
+    pub fn refresh_interval(&self) -> u64 {
+        self.refresh_interval.unwrap_or(300)
     }
 }
 
@@ -4751,5 +4763,23 @@ providers = ["anthropic", "openrouter"]
             config.resolve_active_account_at(Some(&state_path), None),
             Some("personal".to_string())
         );
+    }
+
+    #[test]
+    fn ui_config_multi_account_and_refresh_interval() {
+        let empty: Config = toml::from_str("").unwrap();
+        assert!(empty.ui.multi_account());
+        assert_eq!(empty.ui.refresh_interval(), 300);
+
+        let custom: Config = toml::from_str(
+            r#"
+[ui]
+multi_account = false
+refresh_interval = 60
+"#,
+        )
+        .unwrap();
+        assert!(!custom.ui.multi_account());
+        assert_eq!(custom.ui.refresh_interval(), 60);
     }
 }

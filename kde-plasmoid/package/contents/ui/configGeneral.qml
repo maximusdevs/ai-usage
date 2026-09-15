@@ -13,6 +13,7 @@ KCM.SimpleKCM {
     id: page
 
     property alias cfg_interval: intervalSpin.value
+    property alias cfg_multiAccount: multiAccountCheck.checked
     property alias cfg_commandTimeout: commandTimeoutSpin.value
     property alias cfg_binaryPath: binaryField.text
     property alias cfg_terminalCommand: terminalField.text
@@ -195,13 +196,20 @@ KCM.SimpleKCM {
         QQC2.SpinBox {
             id: intervalSpin
             Kirigami.FormData.label: i18n("Refresh interval (s):")
-            // Matches <min>30</min> in config/main.xml and the floor main.qml
-            // clamps to. One report covers every configured vendor, so the
-            // panel does not need a per-vendor cadence — the countdowns tick
-            // locally from reset_at between fetches.
-            from: 30
+            // Matches <min>5</min> in config/main.xml and the floor main.qml clamps to.
+            from: 5
             to: 3600
-            stepSize: 30
+            stepSize: 10
+            textFromValue: function(value) {
+                if (value >= 60 && value % 60 === 0) {
+                    return value + " s (" + (value / 60) + " min)";
+                }
+                return value + " s";
+            }
+            valueFromText: function(text) {
+                const n = parseInt(text, 10);
+                return isNaN(n) ? 300 : n;
+            }
         }
 
         QQC2.SpinBox {
@@ -375,9 +383,37 @@ KCM.SimpleKCM {
             }
         }
 
+        QQC2.ComboBox {
+            id: accountModeCombo
+            Kirigami.FormData.label: i18n("Account mode:")
+            model: [
+                i18n("Multiple accounts (with account switcher)"),
+                i18n("Individual session (active session only)")
+            ]
+            currentIndex: multiAccountCheck.checked ? 0 : 1
+            onActivated: {
+                multiAccountCheck.checked = (currentIndex === 0);
+            }
+        }
+
+        QQC2.CheckBox {
+            id: multiAccountCheck
+            visible: false
+        }
+
+        QQC2.Label {
+            text: multiAccountCheck.checked
+                ? i18n("Multi-account mode: Shows account switcher in popup and preserves quota history across accounts.")
+                : i18n("Individual session mode: Tracks only the currently logged-in account and hides account switcher.")
+            font: Kirigami.Theme.smallFont
+            opacity: 0.7
+            wrapMode: Text.WordWrap
+            Layout.maximumWidth: Kirigami.Units.gridUnit * 24
+            textFormat: Text.PlainText
+        }
+
         QQC2.CheckBox {
             id: showFullEmailCheck
-            Kirigami.FormData.label: i18n("Accounts:")
             text: i18n("Show full email address (off = username only)")
         }
 

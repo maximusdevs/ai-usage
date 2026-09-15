@@ -160,6 +160,10 @@ refetches.
 - **Independent Progress Bars:** Toggling off progress bars in compact mode hides them exclusively on the taskbar panel; full progress bars remain clearly visible inside the expanded popup.
 - **Extra Models Visual Linking:** Sub-models (e.g. Antigravity Claude / Gemini extras) are displayed neatly grouped and linked under their primary provider, matching their availability status.
 - **Flexible Provider Label:** Configure panel items to display Provider Icon only, Name only, or both.
+- **Configurable Refresh Interval:** Easily customize the polling frequency (5s to 3600s) directly in widget settings or in `config.toml`, with intuitive time unit display (seconds and minutes).
+- **Multi-Account vs. Individual Session Mode:**
+  - *Multi-Account Mode:* Display the account switcher in the popup, quickly toggle between different accounts, and preserve quota history and renewal tracking across multiple profiles.
+  - *Individual Session Mode:* Monitor only the live active login on the machine without showing the account selector or preserving multi-account switcher state.
 
 ## Shared logic
 

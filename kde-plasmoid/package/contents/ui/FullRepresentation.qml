@@ -135,7 +135,7 @@ Item {
         // --- account selector ----------------------------------------------
         RowLayout {
             Layout.fillWidth: true
-            visible: full.applet.accounts.length > 0
+            visible: full.applet.multiAccount && full.applet.accounts.length > 0
             spacing: Kirigami.Units.smallSpacing
 
             PlasmaComponents.Label {

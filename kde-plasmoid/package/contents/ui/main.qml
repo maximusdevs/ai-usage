@@ -29,11 +29,9 @@ PlasmoidItem {
     readonly property int fetchTimeoutSecs: Logic.timeoutSeconds(
         Plasmoid.configuration.commandTimeout)
 
-    // The floor the settings actually offer: config/main.xml declares <min>30</min>
-    // and the spinbox steps from 30. One report covers every configured vendor,
-    // so the panel does not need a per-vendor cadence — the native Omarchy panel
-    // defaults to the same 300s for the same reason.
-    readonly property int minIntervalSecs: 30
+    // The floor the settings actually offer: config/main.xml declares <min>5</min>
+    // and the spinbox steps from 5 or 10. One report covers every configured vendor.
+    readonly property int minIntervalSecs: 5
 
     readonly property string vendor: Plasmoid.configuration.vendor
     readonly property var entry: Logic.entryFor(root.report, root.vendor)
@@ -81,6 +79,7 @@ PlasmoidItem {
     readonly property bool showIcon: Plasmoid.configuration.showIcon
     readonly property bool showName: Plasmoid.configuration.showName
     readonly property bool showAllProviders: Plasmoid.configuration.showAllProviders
+    readonly property bool multiAccount: Plasmoid.configuration.multiAccount
     readonly property bool showFullEmail: Plasmoid.configuration.showFullEmail
     readonly property bool showExtraModels: Plasmoid.configuration.showExtraModels
     readonly property var selectedExtraModels: Plasmoid.configuration.selectedExtraModels || []
@@ -261,7 +260,7 @@ PlasmoidItem {
     }
 
     function refresh(forced) {
-        if (forced) {
+        if (forced || !root.multiAccount) {
             root.activeAccountOverride = "";
         }
         const cmd = root.currentCommand(forced ? { refresh: true } : {});
@@ -273,7 +272,7 @@ PlasmoidItem {
     }
 
     function switchAccount(label) {
-        if (!label) return;
+        if (!root.multiAccount || !label) return;
         root.activeAccountOverride = label;
         launcher.exec(Logic.buildAccountSwitchCommand(Plasmoid.configuration.binaryPath, label));
         root.refresh(true);

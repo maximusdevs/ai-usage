@@ -833,34 +833,36 @@ fn render_json_with_account(
         obj.insert("account".to_string(), json!(acct));
     }
     if let Ok(cfg) = Config::load() {
-        let active_lbl = cfg.resolve_active_account(account.map(|a| a.label.as_str()));
-        let mut acct_list = Vec::new();
-        for a in &cfg.accounts {
-            let is_active = active_lbl
-                .as_deref()
-                .map(|al| al.eq_ignore_ascii_case(&a.label))
-                .unwrap_or(false);
-            acct_list.push(json!({
-                "label": a.label,
-                "user": a.user,
-                "active": is_active,
-            }));
-        }
-        for snap in crate::account_store::all_snapshots() {
-            if !acct_list.iter().any(|item| item["label"].as_str() == Some(&snap.account_label)) {
+        if cfg.ui.multi_account() {
+            let active_lbl = cfg.resolve_active_account(account.map(|a| a.label.as_str()));
+            let mut acct_list = Vec::new();
+            for a in &cfg.accounts {
                 let is_active = active_lbl
                     .as_deref()
-                    .map(|al| al.eq_ignore_ascii_case(&snap.account_label))
+                    .map(|al| al.eq_ignore_ascii_case(&a.label))
                     .unwrap_or(false);
                 acct_list.push(json!({
-                    "label": snap.account_label,
-                    "user": snap.user,
+                    "label": a.label,
+                    "user": a.user,
                     "active": is_active,
                 }));
             }
-        }
-        if let Some(obj) = val.as_object_mut() {
-            obj.insert("accounts".to_string(), json!(acct_list));
+            for snap in crate::account_store::all_snapshots() {
+                if !acct_list.iter().any(|item| item["label"].as_str() == Some(&snap.account_label)) {
+                    let is_active = active_lbl
+                        .as_deref()
+                        .map(|al| al.eq_ignore_ascii_case(&snap.account_label))
+                        .unwrap_or(false);
+                    acct_list.push(json!({
+                        "label": snap.account_label,
+                        "user": snap.user,
+                        "active": is_active,
+                    }));
+                }
+            }
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("accounts".to_string(), json!(acct_list));
+            }
         }
     }
     let renewals = crate::monitor::detect_all_renewals(Utc::now());
@@ -1702,5 +1704,12 @@ mod tests {
         assert_eq!(failed.short_name, "myt");
         assert_eq!(failed.display_name, "My Tool");
         assert!(failed.sections.is_empty());
+    }
+
+    #[test]
+    fn render_json_respects_multi_account_toggle() {
+        let json_str = render_json_with_account(&[], None, None);
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(parsed.get("accounts").is_some());
     }
 }

@@ -24,6 +24,8 @@ ai-usagebar-tui --config ./config.test.toml
 #                         # | zai | openrouter | deepseek | kimi | kilo | novita
 #                         # | moonshot | grok | supergrok | antigravity | cursor
 #                         # | minimax | kiro | nous | opencode-go | commandcode
+# refresh_interval = 300  # Refresh interval in seconds between usage checks (default: 300)
+# multi_account = true    # true: enable multi-account switcher; false: individual session only
 
 [context]
 enabled = false           # opt in, then press c in ai-usagebar-tui

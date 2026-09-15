@@ -20,6 +20,13 @@
 # Presentation of vendor tab navigation: sidebar (vertical box) | navbar (top strip) | none (hidden).
 # Default sidebar (falls back to navbar on narrow terminals).
 # vendor_box = "sidebar"
+#
+# Refresh interval in seconds between usage checks (default: 300).
+# refresh_interval = 300
+#
+# Multi-account mode: enable account switcher and historical snapshot tracking (true).
+# Set to false for individual session mode (tracks only current active machine session).
+# multi_account = true
 
 # Multi-provider accounts: group providers under a user identity and switch between them.
 # active_account = "personal"

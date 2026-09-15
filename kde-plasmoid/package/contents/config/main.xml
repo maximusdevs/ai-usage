@@ -32,8 +32,12 @@
          shorter provider TTLs between these aggregate refreshes. -->
     <entry name="interval" type="Int">
       <default>300</default>
-      <min>30</min>
+      <min>5</min>
       <max>3600</max>
+    </entry>
+
+    <entry name="multiAccount" type="Bool">
+      <default>true</default>
     </entry>
 
     <!-- Aggregate reports may contact several providers sequentially. Keep the
